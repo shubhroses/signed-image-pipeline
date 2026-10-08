@@ -1,0 +1,160 @@
+name: ci
+
+# Every pull request, and every push to main or to a work-in-progress branch.
+# Nothing here needs a secret or write access, so the token is read-only.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "wip/**"
+
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes the run already in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Naming bash explicitly makes every script run with -e and -o pipefail.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: ruff and pytest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13" # the Python of both images in the Dockerfile
+
+      - name: Install the locked dependencies
+        run: |
+          python -m pip install --require-hashes \
+            --requirement app/requirements.txt \
+            --requirement app/requirements-dev.txt
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format
+        run: ruff format --check .
+
+      - name: pytest
+        run: pytest
+
+  hadolint:
+    name: hadolint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load the pinned tool images
+        run: grep -E '^[A-Z][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+
+      - name: Lint the Dockerfile
+        run: docker run --rm --interactive "$HADOLINT_IMAGE" < Dockerfile
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load the pinned tool images
+        run: grep -E '^[A-Z][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+
+      - name: Lint the workflows
+        run: |
+          docker run --rm --volume "$PWD:/repo:ro" --workdir /repo \
+            "$ACTIONLINT_IMAGE" -color
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the whole history: a deleted secret is still a leaked secret
+          persist-credentials: false
+
+      - name: Load the pinned tool images
+        run: grep -E '^[A-Z][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+
+      - name: Scan the history for secrets
+        run: |
+          docker run --rm --volume "$PWD:/repo:ro" \
+            "$GITLEAKS_IMAGE" git --redact --verbose /repo
+
+  image:
+    name: docker build and trivy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      IMAGE: signed-image-pipeline:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load the pinned tool images
+        run: grep -E '^[A-Z][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+
+      - name: Build the image without pushing it
+        run: docker build --build-arg "REVISION=$GITHUB_SHA" --tag "$IMAGE" .
+
+      # The flags are the restrictions of a hardened pod: a read-only root
+      # filesystem, no capabilities and no privilege escalation.
+      - name: Run the image under the restrictions of a hardened pod
+        id: smoke
+        run: |
+          docker run --detach --name smoke --publish 127.0.0.1:8080:8080 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges "$IMAGE"
+          curl --fail --silent --show-error \
+            --retry 10 --retry-delay 1 --retry-all-errors \
+            http://127.0.0.1:8080/healthz \
+            | jq --exit-status '.status == "ok"'
+          curl --fail --silent --show-error http://127.0.0.1:8080/version \
+            | jq --exit-status --arg revision "$GITHUB_SHA" '.revision == $revision'
+
+      - name: Show the container log if it did not answer
+        if: failure() && steps.smoke.outcome == 'failure'
+        run: docker logs smoke
+
+      # Asked from inside the container, so a broken image cannot pass by
+      # failing to run the question.
+      - name: Check the image has no root user, pip or shell
+        run: |
+          docker exec --interactive smoke python3 - <<'EOF'
+          import importlib.util
+          import os
+          import shutil
+
+          assert os.getuid() != 0, "the service runs as root"
+          assert importlib.util.find_spec("pip") is None, "pip is in the image"
+          assert shutil.which("sh") is None, "a shell is in the image"
+          EOF
+
+      # Trivy reads the image from a read-only tarball. A scanner needs to see
+      # the image; it does not need the Docker socket or the workspace.
+      - name: Fail on fixable High or Critical vulnerabilities
+        run: |
+          docker save --output "$RUNNER_TEMP/image.tar" "$IMAGE"
+          docker run --rm --volume "$RUNNER_TEMP/image.tar:/image.tar:ro" \
+            "$TRIVY_IMAGE" image --input /image.tar --no-progress \
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed
