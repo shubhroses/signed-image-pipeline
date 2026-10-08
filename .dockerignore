@@ -1,0 +1,6 @@
+# The build context is an allowlist: everything is left out except the three
+# files the Dockerfile copies, so nothing else can end up in an image.
+*
+!app/__init__.py
+!app/main.py
+!app/requirements.txt
