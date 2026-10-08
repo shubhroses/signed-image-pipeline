@@ -1,0 +1,6 @@
+# Direct runtime dependencies: what goes into the image.
+# requirements.txt is this file resolved and locked with hashes. Regenerate it
+# with the pip-compile command in its header, on the Python version the
+# Dockerfile uses.
+fastapi
+uvicorn

@@ -1,0 +1,15 @@
+# Tool configuration only. This repository is not an installable package:
+# the app's dependencies are locked in app/requirements.txt.
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+# E, W: pycodestyle   F: pyflakes   I: import order
+# B: bugbear          UP: pyupgrade  S: bandit's security checks
+select = ["E", "W", "F", "I", "B", "UP", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest tests are written with bare asserts, which S101 flags.
+"test_*.py" = ["S101"]

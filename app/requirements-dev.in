@@ -1,0 +1,7 @@
+# Test and lint dependencies: never installed into the image.
+# The constraint keeps every package shared with the runtime lock at the
+# version the image ships, so the tests run against what is released.
+-c requirements.txt
+httpx2  # FastAPI's TestClient needs it
+pytest
+ruff
