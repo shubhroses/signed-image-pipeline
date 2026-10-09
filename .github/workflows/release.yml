@@ -30,6 +30,30 @@ env:
   FIXTURES: ghcr.io/shubhroses/signed-image-pipeline-fixtures
 
 jobs:
+  # The same check as in ci.yml. This workflow does not wait for that one, so
+  # it asks for itself: the gate below must not accept a finding on the
+  # strength of an exception that has no reason or no valid expiry date.
+  exceptions:
+    name: scan exceptions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13" # the Python the lock was resolved for
+
+      - name: Install the locked dev dependencies
+        run: |
+          python -m pip install --require-hashes \
+            --requirement app/requirements-dev.txt
+
+      - name: Check every exception has a reason and expires within 90 days
+        run: python scripts/check_scan_exceptions.py .trivyignore.yaml
+
   build:
     name: build and push
     runs-on: ubuntu-24.04
@@ -118,7 +142,8 @@ jobs:
   # pulls one, or a reader who checks one. A new GHCR package can start out
   # private, and a private image fails every later check for the wrong
   # reason, because nobody can read it. A fixture has to be refused for how
-  # it was signed, so each image is first shown to be readable by anyone.
+  # it was signed, so each image is first shown to be readable by anyone,
+  # and the rest of the workflow waits for that.
   pull:
     name: anonymous pull
     needs: build
@@ -143,3 +168,110 @@ jobs:
             python3 scripts/retry.py \
               docker --config "$RUNNER_TEMP/no-credentials" pull --quiet "$reference"
           done
+
+  # Trivy runs from a pinned image and reads the released image from the
+  # registry by digest, without credentials. The job has a read-only token
+  # and nothing is mounted into the scanner but the exceptions file and a
+  # cache, which carries the vulnerability database from step to step.
+  scan:
+    name: sbom and gate
+    needs: [build, pull, exceptions]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RELEASE: ${{ needs.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load the pinned tool images
+        run: grep -E '^[A-Z][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+
+      # Downloaded once, so that the totals and the gate below are both
+      # answers from the same database.
+      - name: Download the vulnerability database
+        run: |
+          python3 scripts/retry.py docker run --rm \
+            --volume trivy-cache:/root/.cache/trivy \
+            "$TRIVY_IMAGE" image --download-db-only --no-progress
+
+      - name: Write the SBOM
+        run: |
+          docker run --rm \
+            --volume trivy-cache:/root/.cache/trivy \
+            "$TRIVY_IMAGE" image --image-src remote --no-progress \
+            --format spdx-json "$RELEASE" > "$RUNNER_TEMP/sbom.spdx.json"
+
+      # No severity filter and no --ignore-unfixed here: this report is what
+      # the summary counts, and it counts what the gate does not act on too.
+      - name: List every finding, with or without a fix
+        run: |
+          docker run --rm \
+            --volume trivy-cache:/root/.cache/trivy \
+            --volume "$PWD/.trivyignore.yaml:/.trivyignore.yaml:ro" \
+            "$TRIVY_IMAGE" image --image-src remote --no-progress \
+            --skip-db-update \
+            --ignorefile /.trivyignore.yaml --show-suppressed \
+            --format json "$RELEASE" > "$RUNNER_TEMP/scan.json"
+
+      # Written before the gate, so that a run the gate stops still shows
+      # what was found. "With a fix" is Trivy's status "fixed", which is
+      # what --ignore-unfixed keeps.
+      - name: Summarise
+        run: |
+          {
+            echo "### SBOM and scan"
+            echo
+            echo "- Image: \`$RELEASE\`"
+            jq --raw-output '
+              [.packages[] | select(.primaryPackagePurpose == "LIBRARY")] as $libraries
+              | [$libraries[].externalRefs[]? | select(.referenceType == "purl")
+                 | .referenceLocator | ltrimstr("pkg:") | split("/")[0]] as $types
+              | ($types | group_by(.) | map("\(length) \(.[0])") | join(", ")) as $by_type
+              | "- SBOM: \($libraries | length) packages (\($by_type))"
+            ' "$RUNNER_TEMP/sbom.spdx.json"
+            docker run --rm --volume trivy-cache:/root/.cache/trivy \
+              "$TRIVY_IMAGE" version --format json | jq --raw-output '
+              "- Scanner: Trivy \(.Version), vulnerability database updated "
+              + .VulnerabilityDB.UpdatedAt[0:19] + "Z"
+            '
+            jq --raw-output '
+              [.Results[]?.Vulnerabilities[]?] as $found
+              | "- Findings accepted in .trivyignore.yaml: "
+                + ([.Results[]?.ExperimentalModifiedFindings[]?] | length | tostring),
+                "- Secrets found in the image: "
+                + ([.Results[]?.Secrets[]?] | length | tostring),
+                "",
+                "| Severity | Findings | With a fix |",
+                "|---|---|---|",
+                (("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN") as $severity
+                 | [$found[] | select(.Severity == $severity)]
+                 | "| \($severity) | \(length) | \(map(select(.Status == "fixed")) | length) |")
+            ' "$RUNNER_TEMP/scan.json"
+            echo
+            echo "The gate fails on a High or Critical vulnerability that has a" \
+              "fix and on a High or Critical secret, unless \`.trivyignore.yaml\`" \
+              "accepts the finding. A vulnerability with no fix does not fail" \
+              "it, so passing the gate does not mean that none is known."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The gate of ci.yml with the same flags, asked about the image that
+      # was pushed. When it fails the job stops here: the SBOM is not kept and
+      # no job that needs this one runs.
+      - name: Fail on fixable High or Critical vulnerabilities
+        run: |
+          docker run --rm \
+            --volume trivy-cache:/root/.cache/trivy \
+            --volume "$PWD/.trivyignore.yaml:/.trivyignore.yaml:ro" \
+            "$TRIVY_IMAGE" image --image-src remote --no-progress \
+            --skip-db-update \
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile /.trivyignore.yaml --show-suppressed "$RELEASE"
+
+      - name: Keep the SBOM with the run
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom.spdx.json
+          if-no-files-found: error
