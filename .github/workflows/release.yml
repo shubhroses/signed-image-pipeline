@@ -2,6 +2,11 @@ name: release
 
 # Every push to main or to a work-in-progress branch, and on demand. A pull
 # request never starts this workflow, because every run publishes images.
+#
+# The images are signed as "this workflow, on the ref it ran on", and only
+# the identity of a run on main is to be trusted. So a run on main makes a
+# release and a run anywhere else is a rehearsal: the same jobs, checked
+# against the identity of its own ref, which nothing trusts.
 on:
   push:
     branches:
@@ -32,6 +37,7 @@ env:
   # workflow and the ref of the run that asked into the signing certificate,
   # on the word of the issuer, which is GitHub's token service.
   TRUSTED_IDENTITY: https://github.com/shubhroses/signed-image-pipeline/.github/workflows/release.yml@refs/heads/main
+  ISSUER: https://token.actions.githubusercontent.com
 
 jobs:
   # The same check as in ci.yml. This workflow does not wait for that one, so
@@ -416,3 +422,166 @@ jobs:
           | Fixture: no SBOM | \`$no_sbom_signer\` | $no_sbom_entry |
           | Fixture: wrong signer | a key made and deleted in this job | $wrong_signer_entry |
           EOF
+
+  # The checks a stranger can make: no login, no token and no key, only the
+  # public registry and the identity to expect. What must pass is tried
+  # again if it fails, because cosign cannot be talked into finding a
+  # signature that is not there. What must fail is asked once, and has to
+  # fail in cosign's own words for that case (scripts/expect_failure.py).
+  verify:
+    name: verify
+    needs: [build, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RELEASE: ${{ needs.build.outputs.image }}
+      UNSIGNED: ${{ needs.build.outputs.fixture-unsigned }}
+      WRONG_SIGNER: ${{ needs.build.outputs.fixture-wrong-signer }}
+      NO_SBOM: ${{ needs.build.outputs.fixture-no-sbom }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load the pinned tool images and name a directory for cosign
+        run: |
+          grep -E '^[A-Z][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+          echo "COSIGN_HOME=$RUNNER_TEMP/cosign" >> "$GITHUB_ENV"
+
+      - name: Fetch cosign
+        run: python3 scripts/retry.py docker pull --quiet "$COSIGN_IMAGE"
+
+      # On main the images must be signed as the trusted identity, spelt out
+      # above. A run on any other ref cannot have that identity: its
+      # certificates name its own ref. It is checked against that instead, so
+      # that every step below is rehearsed before it runs on main.
+      - name: Choose the identity to expect
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            identity="$TRUSTED_IDENTITY"
+            kind="A release"
+          else
+            identity="https://github.com/$GITHUB_WORKFLOW_REF"
+            kind="A rehearsal on \`$GITHUB_REF\`, whose identity nothing trusts"
+          fi
+          echo "IDENTITY=$identity" >> "$GITHUB_ENV"
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Verification
+
+          $kind. Checked without a login or a key, as any reader can.
+
+          - Image: \`$RELEASE\`
+          - Signer asked for: \`$identity\`
+          - Issuer asked for: \`$ISSUER\`
+          EOF
+
+      # The Makefile names the trusted identity itself, so on main this is
+      # the command a reader runs. A rehearsal has to say whom to expect.
+      - name: Run the check any reader can run
+        run: |
+          if [ "$IDENTITY" = "$TRUSTED_IDENTITY" ]; then
+            python3 scripts/retry.py make verify RELEASE="$RELEASE"
+          else
+            python3 scripts/retry.py make verify RELEASE="$RELEASE" IDENTITY="$IDENTITY"
+          fi
+
+      # "cosign verify" accepts any statement about the image that the
+      # identity signed, an SBOM attestation as much as a signature. So its
+      # answer is read too: one of the statements must be the signature.
+      - name: Check the image carries the workflow's signature
+        run: |
+          python3 scripts/retry.py scripts/cosign.sh --output-file signed.json verify \
+            --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$RELEASE"
+          jq --exit-status 'any(.[]; .critical.type == "https://sigstore.dev/cosign/sign/v1")' \
+            "$COSIGN_HOME/signed.json"
+
+      # cosign prints one line for each attestation it verified: a signed
+      # envelope around a statement whose predicate is the SBOM. A retried
+      # "cosign attest" can leave two, and then they must hold the same SBOM.
+      - name: Fetch the SBOM the workflow attested
+        run: |
+          python3 scripts/retry.py scripts/cosign.sh --output-file attested.jsonl verify-attestation \
+            --type spdxjson \
+            --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$RELEASE"
+          jq --slurp '
+            map(.payload | @base64d | fromjson | .predicate) | unique
+            | if length == 1 then .[0] else error("expected one attested SBOM, found \(length)") end
+          ' "$COSIGN_HOME/attested.jsonl" > "$RUNNER_TEMP/attested-sbom.json"
+
+      # The SBOM has to be the one made from this image, and the image has to
+      # hold what the lock says: each package requirements.in asks for, at the
+      # version requirements.txt pins.
+      - name: Check the attested SBOM against the image and the lock
+        run: |
+          jq --exit-status --arg release "$RELEASE" '.name == $release' \
+            "$RUNNER_TEMP/attested-sbom.json"
+          python3 scripts/check_sbom_dependencies.py \
+            app/requirements.in app/requirements.txt "$RUNNER_TEMP/attested-sbom.json" \
+            | tee "$RUNNER_TEMP/dependencies.txt"
+          {
+            jq --raw-output '
+              [.packages[] | select(.primaryPackagePurpose == "LIBRARY")] | length
+              | "- Attested SBOM: \(.) packages, with each direct dependency at its locked version:"
+            ' "$RUNNER_TEMP/attested-sbom.json"
+            sed 's/^/  - /' "$RUNNER_TEMP/dependencies.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Each fixture falls short of a release in one way, and the same two
+      # commands have to say so. cosign says of an image that does not exist
+      # what it says of an unsigned one, which is why this job comes after the
+      # pull job: that job has shown that every one of these can be read.
+      - name: Check each fixture is refused
+        run: |
+          signer=(--certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER")
+          verify=(scripts/cosign.sh verify "${signer[@]}")
+          verify_sbom=(scripts/cosign.sh verify-attestation --type spdxjson "${signer[@]}")
+          # Followed by what cosign has to say and then by what to ask it,
+          # this prints the line in which cosign said it.
+          expect_refusal=(python3 scripts/expect_failure.py)
+
+          # One row of the table: the image, then the answer to each command.
+          row() {
+            printf '| %s | %s | %s |\n' "$@" >> "$GITHUB_STEP_SUMMARY"
+          }
+          echo >> "$GITHUB_STEP_SUMMARY"
+          row "Image" "\`cosign verify\`" "\`cosign verify-attestation --type spdxjson\`"
+          row "---" "---" "---"
+          # A step runs only when those before it have passed, and they asked
+          # both questions about the release.
+          row "Release" "passes" "passes"
+
+          # Nothing is attached to it.
+          signature="$("${expect_refusal[@]}" "no signatures found" "${verify[@]}" "$UNSIGNED")"
+          sbom="$("${expect_refusal[@]}" "no matching attestations" "${verify_sbom[@]}" "$UNSIGNED")"
+          row "Fixture: unsigned" "fails: \`$signature\`" "fails: \`$sbom\`"
+
+          # Its one signature is sound and is in the log, but a key made it
+          # and not a certificate that names the identity.
+          words="transparency log certificate does not match"
+          signature="$("${expect_refusal[@]}" "$words" "${verify[@]}" "$WRONG_SIGNER")"
+          sbom="$("${expect_refusal[@]}" "$words" "${verify_sbom[@]}" "$WRONG_SIGNER")"
+          row "Fixture: wrong signer" "fails: \`$signature\`" "fails: \`$sbom\`"
+
+          # Signed by the identity, so the first command has to pass: that is
+          # what leaves the missing SBOM as the only reason to refuse it.
+          python3 scripts/retry.py "${verify[@]}" "$NO_SBOM" > /dev/null
+          words="none of the attestations matched the predicate type: spdxjson"
+          sbom="$("${expect_refusal[@]}" "$words" "${verify_sbom[@]}" "$NO_SBOM")"
+          row "Fixture: no SBOM" "passes" "fails: \`$sbom\`"
+
+      # What keeps a branch from making a release. This image was signed on
+      # another ref, so the trusted identity must not accept it, and cosign
+      # names both identities when it refuses.
+      - name: Check the trusted identity refuses a rehearsal
+        if: github.ref != 'refs/heads/main'
+        run: |
+          refusal="$(python3 scripts/expect_failure.py \
+            "expected SAN value \"$TRUSTED_IDENTITY\", got \"$IDENTITY\"" \
+            scripts/cosign.sh verify \
+            --certificate-identity "$TRUSTED_IDENTITY" --certificate-oidc-issuer "$ISSUER" "$RELEASE")"
+          {
+            echo
+            echo "Asked for the trusted identity instead, \`cosign verify\` refuses this image:"
+            echo
+            echo "    $refusal"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -10,5 +10,6 @@ __pycache__/
 .idea/
 .vscode/
 
-# The image that "make scan" saves for Trivy to read
+# What the make targets keep between runs: the image "make scan" saves for
+# Trivy to read, and the directory "make verify" gives cosign as its home
 .cache/
