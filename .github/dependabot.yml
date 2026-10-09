@@ -1,0 +1,59 @@
+# Dependabot keeps the pins of this repository moving: every Monday it opens
+# one pull request for each group below whose pins are behind. A pull request
+# runs ci.yml, and merging one is a push to main, which makes a release.
+#
+# This is also how main turns green again after the scan gate has failed on a
+# vulnerability that got a fix: the fix arrives as one of these pull requests.
+#
+# Not covered, because Dependabot reads none of these: the tool images and the
+# Kyverno chart version in versions.env, and the release digest in deploy/,
+# which is moved by hand after a release.
+version: 2
+updates:
+  # The actions the workflows use. Each is pinned by commit, and Dependabot
+  # moves the commit and the version in the comment behind it together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00" # UTC
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The two locks in app/, which pip-compile wrote with hashes. "all" adds
+  # the packages that are in a lock only because another package needs them.
+  # They are in the image as well, and the scan gate does not ask how a
+  # vulnerable package got there.
+  - package-ecosystem: pip
+    directory: /app
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00" # UTC
+    allow:
+      - dependency-type: all
+    groups:
+      python:
+        patterns: ["*"]
+
+  # The two images of the Dockerfile, each pinned by digest. A new digest
+  # under the same tag is how a rebuilt base image arrives, and with it the
+  # fixes for the system packages. A newer Python is not taken from here: the
+  # locks, the workflows and the runtime image name the same minor version and
+  # have to move with it.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00" # UTC
+    ignore:
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+    groups:
+      base-images:
+        patterns: ["*"]
