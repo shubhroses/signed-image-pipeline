@@ -184,7 +184,7 @@ make test        # the unit tests, the check of the scan exceptions and kyverno 
 make admission   # the eight cases, on a kind cluster of its own
 ```
 
-- `make verify` and `make scan` need Docker. `make verify` works on a commit of `main` once its release run has finished; `make verify RELEASE=ghcr.io/shubhroses/signed-image-pipeline@sha256:…` checks any other image.
+- `make verify` and `make scan` need Docker. `make verify` works when the commit that is checked out was the last of a push to `main`, as the tip of a fresh clone is, and its release run has finished: a push of several commits makes one release, from the last of them. `make verify RELEASE=ghcr.io/shubhroses/signed-image-pipeline@sha256:…` checks any other image.
 - `make test` also needs Python 3.13 with the locked dependencies, and the network, because `kyverno test` asks the image policy about real images:
 
   ```sh
