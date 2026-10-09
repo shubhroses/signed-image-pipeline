@@ -43,6 +43,8 @@ There are three workflows:
 | [`release.yml`](.github/workflows/release.yml) | every push to `main`, and on demand | The seven jobs above. About five minutes. |
 | [`rescan.yml`](.github/workflows/rescan.yml) | every Monday, and on demand | Fetches the attested SBOM of the latest release, scans it with that day's vulnerability database and opens an issue for each High or Critical vulnerability that has a fix. It rebuilds nothing, and a finding does not fail the run. Another job deletes test fixtures made more than 30 days before the newest. |
 
+A push to a branch named `wip/…` starts all three as well, so that a change to a workflow can be rehearsed before it reaches `main`. A rehearsal of `release.yml` signs as its own branch, which nothing trusts ([Limitations](#limitations)). A rehearsal of `rescan.yml` is not a dry run: it reads the latest release of `main`, and it opens issues and prunes fixtures as a Monday run does.
+
 ## Verify the published image
 
 Anyone can check a release, without a login and without a key. With [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) installed, one command asks whether this image was signed by this repository's release workflow, run on `main`:
@@ -159,6 +161,7 @@ The test has also been seen to fail. [A run on a throwaway branch](https://githu
 - A pull request never starts `release.yml`: every run of it publishes images, and a pull request does not have the identity of `main`, so it could not make the trusted signature. The accept and reject test therefore runs after a merge, and a change that breaks it turns `main` red, not the pull request.
 - What a pull request does run is `ci.yml`, in which `kyverno test` asks the image policy as committed about real images: the release that `deploy/` pins, an image from another registry and one that the release workflow signed on a branch. Nothing makes a green `ci.yml` or a review a condition of merging: that takes branch protection, a repository setting, which was not switched on when this was written.
 - A change to the workflow or to a policy can be rehearsed first: a push to a branch named `wip/…` runs the whole of `release.yml`, with the branch's own identity put in place of `main`'s in a copy of the image policy. That proves the mechanics and not the trust. Nothing admits what a rehearsal signs, and its images stay in the registry next to the releases.
+- A rehearsal tags its image with its commit, as a release does and in the same package. A branch pushed at a commit that `main` has already released would therefore move that release's tag to the rehearsal's image. Nothing trusts a tag: `make verify` and the rescan would then fail on the signer, and `deploy/` pins a digest.
 
 **What follows from the gate**
 
