@@ -1,0 +1,289 @@
+name: rescan
+
+# Every Monday and on demand. A push to a work-in-progress branch starts it
+# too, so that a change to this file is rehearsed before it reaches main.
+#
+# A release is scanned once, on the day it is made. This workflow looks after
+# what changes later without a push: vulnerabilities that become known, or
+# get a fix, in an image that is already released.
+#
+# Nothing here builds, signs or releases, and a finding does not fail the run.
+# It becomes an issue, and main stays as green or as red as its last push
+# left it.
+on:
+  schedule:
+    - cron: "23 6 * * 1" # Mondays at 06:23 UTC
+  workflow_dispatch:
+  push:
+    branches:
+      - "wip/**"
+
+# What a job gets unless it asks for something else. Each job below does, for
+# the one thing it needs, and says why.
+permissions:
+  contents: read
+
+# A newer run on the same ref supersedes the one already in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Naming bash explicitly makes every script run with -e and -o pipefail.
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE: ghcr.io/shubhroses/signed-image-pipeline
+  # The signer of a release, as in release.yml: that workflow, run on main.
+  TRUSTED_IDENTITY: https://github.com/shubhroses/signed-image-pipeline/.github/workflows/release.yml@refs/heads/main
+  ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  # The latest release is read as a stranger reads it: without a login, from
+  # the public registry, trusting only the identity above. What is scanned is
+  # the SBOM that the release workflow attested, so the answer is about the
+  # image that was released and not about what the Dockerfile builds today.
+  # The scanner is the pinned one; the vulnerability database is today's.
+  rescan:
+    name: rescan the latest release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read # to look up the last run of the release workflow that passed
+    outputs:
+      release: ${{ steps.release.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load the pinned tool images and name a directory for cosign
+        run: |
+          grep -E '^[A-Z][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+          echo "COSIGN_HOME=$RUNNER_TEMP/cosign" >> "$GITHUB_ENV"
+
+      # The latest release is the image of the newest run of the release
+      # workflow on main in which every job passed. That run tagged the image
+      # with the commit it was built from. The tag is looked up once, here,
+      # and every later step uses the digest it stood for.
+      - name: Find the latest release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch main \
+            --status success --limit 1 --json headSha,url > "$RUNNER_TEMP/release-run.json"
+          commit="$(jq --raw-output '
+            .[0].headSha // error("no run of the release workflow on main has passed yet")
+          ' "$RUNNER_TEMP/release-run.json")"
+          digest="$(python3 scripts/retry.py docker buildx imagetools inspect \
+            --format '{{json .Manifest}}' "$IMAGE:$commit" | jq --raw-output --exit-status .digest)"
+          echo "release=$IMAGE@$digest" | tee -a "$GITHUB_OUTPUT"
+          echo "RELEASE=$IMAGE@$digest" >> "$GITHUB_ENV"
+
+      - name: Fetch cosign
+        run: python3 scripts/retry.py docker pull --quiet "$COSIGN_IMAGE"
+
+      # The steps of the verify job in release.yml. cosign prints one line for
+      # each attestation it verified: a signed envelope around a statement
+      # whose predicate is the SBOM. This fails if the image has none signed
+      # by the trusted identity, so nothing unsigned is ever scanned as "the
+      # release". The SBOM must also name the image it was fetched for.
+      - name: Fetch the SBOM the release workflow attested
+        run: |
+          python3 scripts/retry.py scripts/cosign.sh --output-file attested.jsonl verify-attestation \
+            --type spdxjson \
+            --certificate-identity "$TRUSTED_IDENTITY" --certificate-oidc-issuer "$ISSUER" "$RELEASE"
+          jq --slurp '
+            map(.payload | @base64d | fromjson | .predicate) | unique
+            | if length == 1 then .[0] else error("expected one attested SBOM, found \(length)") end
+          ' "$COSIGN_HOME/attested.jsonl" > "$RUNNER_TEMP/sbom.spdx.json"
+          jq --exit-status --arg release "$RELEASE" '.name == $release' \
+            "$RUNNER_TEMP/sbom.spdx.json"
+
+      # Nothing is kept from one run to the next, so this is the database as
+      # it is published now.
+      - name: Download today's vulnerability database
+        run: |
+          python3 scripts/retry.py docker run --rm \
+            --volume trivy-cache:/root/.cache/trivy \
+            "$TRIVY_IMAGE" image --download-db-only --no-progress
+
+      # A rescan that finds nothing looks the same as a scanner that sees
+      # nothing. So the scanner is first shown an SBOM that lists one package
+      # with Critical vulnerabilities fixed years ago, with the flags it is
+      # about to use, and the run stops unless it reports them.
+      - name: Check the scanner still finds a vulnerability that is there
+        run: |
+          docker run --rm \
+            --volume trivy-cache:/root/.cache/trivy \
+            --volume "$PWD/scripts/rescan_canary.spdx.json:/sbom.spdx.json:ro" \
+            "$TRIVY_IMAGE" sbom --no-progress --skip-db-update \
+            --severity HIGH,CRITICAL --ignore-unfixed \
+            --format json /sbom.spdx.json > "$RUNNER_TEMP/canary.json"
+          jq --raw-output '
+            .Results[]?.Vulnerabilities[]?
+            | "\(.VulnerabilityID) \(.Severity) in \(.PkgName) \(.InstalledVersion)"
+          ' "$RUNNER_TEMP/canary.json"
+          jq --exit-status '[.Results[]?.Vulnerabilities[]?] | length > 0' \
+            "$RUNNER_TEMP/canary.json" > /dev/null
+
+      # No severity filter and no --ignore-unfixed here: this report is what
+      # the summary counts, and it counts what the gate does not act on too.
+      - name: List every finding, with or without a fix
+        run: |
+          docker run --rm \
+            --volume trivy-cache:/root/.cache/trivy \
+            --volume "$RUNNER_TEMP/sbom.spdx.json:/sbom.spdx.json:ro" \
+            --volume "$PWD/.trivyignore.yaml:/.trivyignore.yaml:ro" \
+            "$TRIVY_IMAGE" sbom --no-progress --skip-db-update \
+            --ignorefile /.trivyignore.yaml --show-suppressed \
+            --format json /sbom.spdx.json > "$RUNNER_TEMP/all.json"
+
+      # The gate of ci.yml and release.yml, with the same flags and the same
+      # exceptions file, asked about the SBOM instead of the image. Without
+      # --exit-code it answers with a report and does not fail: what it lists
+      # is what the gate would fail on if this image were released today. An
+      # exception that has expired no longer hides its finding, so it shows
+      # up here as well.
+      - name: List what the scan gate would fail on today
+        run: |
+          docker run --rm \
+            --volume trivy-cache:/root/.cache/trivy \
+            --volume "$RUNNER_TEMP/sbom.spdx.json:/sbom.spdx.json:ro" \
+            --volume "$PWD/.trivyignore.yaml:/.trivyignore.yaml:ro" \
+            "$TRIVY_IMAGE" sbom --no-progress --skip-db-update \
+            --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile /.trivyignore.yaml --show-suppressed \
+            --format json /sbom.spdx.json > "$RUNNER_TEMP/rescan.json"
+
+      # Trivy has to recognise what an SBOM lists before it can look anything
+      # up. If it did not take in every package, "no findings" means little.
+      - name: Check the scanner read every package of the SBOM
+        run: |
+          listed="$(jq '[.packages[] | select(.primaryPackagePurpose == "LIBRARY")] | length' \
+            "$RUNNER_TEMP/sbom.spdx.json")"
+          scanned="$(jq '[.Results[]?.Packages[]?] | length' "$RUNNER_TEMP/rescan.json")"
+          echo "The SBOM lists $listed packages and Trivy read $scanned."
+          [ "$listed" -gt 0 ]
+          [ "$scanned" -eq "$listed" ]
+          echo "PACKAGES=$listed" >> "$GITHUB_ENV"
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Rescan"
+            echo
+            jq --raw-output --arg release "$RELEASE" '
+              "- Release: `\($release)`, built from commit `\(.[0].headSha)` by "
+              + "[this run of the release workflow](\(.[0].url))"
+            ' "$RUNNER_TEMP/release-run.json"
+            echo "- SBOM: the one attested by \`$TRUSTED_IDENTITY\`," \
+              "with $PACKAGES packages, all of which the scanner read"
+            docker run --rm --volume trivy-cache:/root/.cache/trivy \
+              "$TRIVY_IMAGE" version --format json | jq --raw-output '
+              "- Scanner: Trivy \(.Version), vulnerability database updated "
+              + .VulnerabilityDB.UpdatedAt[0:19] + "Z"
+            '
+            jq --raw-output '
+              [.Results[]?.Vulnerabilities[]?] as $found
+              | "- Findings accepted in .trivyignore.yaml: "
+                + ([.Results[]?.ExperimentalModifiedFindings[]?] | length | tostring),
+                "",
+                "| Severity | Findings | With a fix |",
+                "|---|---|---|",
+                (("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN") as $severity
+                 | [$found[] | select(.Severity == $severity)]
+                 | "| \($severity) | \(length) | \(map(select(.Status == "fixed")) | length) |")
+            ' "$RUNNER_TEMP/all.json"
+            echo
+            jq --raw-output '
+              [.Results[]?.Vulnerabilities[]?]
+              | if length == 0 then
+                  "The scan gate would pass this image today: no High or Critical "
+                  + "vulnerability in it has a fix that `.trivyignore.yaml` does not accept."
+                else
+                  "The scan gate would fail on this image today. The next job opens an "
+                  + "issue for each of these that no open issue names:",
+                  "",
+                  "| Vulnerability | Severity | Package | Installed | Fixed in |",
+                  "|---|---|---|---|---|",
+                  (.[] | "| \(.VulnerabilityID) | \(.Severity) | `\(.PkgName)` "
+                         + "| `\(.InstalledVersion)` | `\(.FixedVersion)` |")
+                end
+            ' "$RUNNER_TEMP/rescan.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hand the gate's report to the next job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rescan
+          path: ${{ runner.temp }}/rescan.json
+          if-no-files-found: error
+
+  # The only job that may write issues, and it runs no scanner: it reads the
+  # report of the job above, which had a read-only token. A vulnerability gets
+  # an issue unless an open issue names it already, so it is reported once
+  # and not every Monday (scripts/rescan_issues.py).
+  issues:
+    name: open issues for new findings
+    needs: rescan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # to open an issue for a finding
+    env:
+      RELEASE: ${{ needs.rescan.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch the gate's report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rescan
+          path: ${{ runner.temp }}
+
+      - name: Decide which findings need an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 1000 \
+            --json title > "$RUNNER_TEMP/open-issues.json"
+          python3 scripts/rescan_issues.py \
+            "$RUNNER_TEMP/rescan.json" "$RUNNER_TEMP/open-issues.json" \
+            "$RELEASE" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            > "$RUNNER_TEMP/new-issues.jsonl"
+
+      # One line of JSON for each issue. gh prints the address of the issue
+      # it opened. Its standard input is closed so that it cannot take the
+      # lines the loop still has to read.
+      - name: Open them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          touch "$RUNNER_TEMP/opened.txt"
+          while read -r issue; do
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$(jq --raw-output .title <<< "$issue")" \
+              --body "$(jq --raw-output .body <<< "$issue")" \
+              < /dev/null | tee -a "$RUNNER_TEMP/opened.txt"
+          done < "$RUNNER_TEMP/new-issues.jsonl"
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Issues"
+            echo
+            if [ -s "$RUNNER_TEMP/opened.txt" ]; then
+              echo "Opened, one for each vulnerability that no open issue named:"
+              echo
+              sed 's/^/- /' "$RUNNER_TEMP/opened.txt"
+            else
+              echo "None opened: the rescan found nothing that an open issue does not name already."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

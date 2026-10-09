@@ -1,0 +1,38 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "rescan-canary",
+  "documentNamespace": "https://github.com/shubhroses/signed-image-pipeline/scripts/rescan_canary.spdx.json",
+  "comment": "Not the SBOM of anything that exists. rescan.yml shows it to the scanner before the real one. It lists one package, PyYAML 5.3, which has two Critical vulnerabilities that were fixed years ago: CVE-2020-1747 in 5.3.1 and CVE-2020-14343 in 5.4. A scanner that reports nothing for this file is not working, and the rescan stops.",
+  "creationInfo": {
+    "created": "2026-10-09T00:00:00Z",
+    "creators": [
+      "Person: Shubhrose Singh"
+    ]
+  },
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-pyyaml",
+      "name": "PyYAML",
+      "versionInfo": "5.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "primaryPackagePurpose": "LIBRARY",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pyyaml@5.3"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-pyyaml"
+    }
+  ]
+}
