@@ -9,3 +9,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# The image that "make scan" saves for Trivy to read
+.cache/
