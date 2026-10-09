@@ -10,6 +10,7 @@ __pycache__/
 .idea/
 .vscode/
 
-# What the make targets keep between runs: the image "make scan" saves for
-# Trivy to read, and the directory "make verify" gives cosign as its home
+# What the make targets write: the image "make scan" saves for Trivy to read,
+# the directory "make verify" gives cosign as its home, and the kubeconfig,
+# the chart and the table of results of "make admission"
 .cache/
