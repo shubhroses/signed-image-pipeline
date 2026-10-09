@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: signed-image-pipeline
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: signed-image-pipeline
+spec:
+  selector:
+    app.kubernetes.io/name: signed-image-pipeline
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,66 @@
+# The service, as it runs in the apps namespace (policy/namespace.yaml).
+# Everything the three admission controls ask for is spelt out here: the image
+# by digest, the security settings of the "restricted" standard, and CPU and
+# memory requests and limits.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signed-image-pipeline
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: signed-image-pipeline
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: signed-image-pipeline
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: signed-image-pipeline
+    spec:
+      # The service never calls the Kubernetes API, so it gets no token for it.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          # A digest names one image for good; a tag can be moved. This one
+          # is the release built from commit 756ac66 on main.
+          #
+          # A release cannot write its own digest here, because the digest
+          # does not exist until the commit is built. So the pin is moved by
+          # hand, in a commit of its own: take the digest from the summary of
+          # a release run and replace this one. CI then asks the image policy
+          # about the new digest (policy/tests/verify-release-image), and
+          # fails if it is not a release. The admission job of each release
+          # runs these manifests with this line set to the image it has just
+          # built, so a new image is tried here before anyone pins it.
+          image: ghcr.io/shubhroses/signed-image-pipeline@sha256:603f05615a262fe51728bead0d9a6b45f54bc6298be3561cba92e64326fc87fd
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Not part of the "restricted" standard. CI runs the image this
+            # way, so the manifest can ask for it.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
