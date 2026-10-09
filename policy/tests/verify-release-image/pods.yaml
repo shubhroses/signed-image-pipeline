@@ -1,0 +1,12 @@
+# The image is OUTSIDE_IMAGE of versions.env: public, in another registry, and
+# properly signed, by the Kubernetes release team. The policy has to refuse it
+# all the same, because the signer is not this repository's release workflow.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: image-from-another-registry
+  namespace: apps
+spec:
+  containers:
+    - name: app
+      image: registry.k8s.io/pause:3.10.1@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c

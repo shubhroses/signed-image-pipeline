@@ -1,0 +1,84 @@
+# Fixtures for kyverno-test.yaml. Each Pod is named after what it shows. They
+# are never run, so the image need not exist.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: requests-and-limits
+  namespace: apps
+spec:
+  initContainers:
+    - name: init
+      image: registry.example/app:1
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {cpu: 100m, memory: 32Mi}
+  containers:
+    - name: app
+      image: registry.example/app:1
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {cpu: 100m, memory: 32Mi}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: no-resources
+  namespace: apps
+spec:
+  containers:
+    - name: app
+      image: registry.example/app:1
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: no-limits
+  namespace: apps
+spec:
+  containers:
+    - name: app
+      image: registry.example/app:1
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: no-memory-limit
+  namespace: apps
+spec:
+  containers:
+    - name: app
+      image: registry.example/app:1
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {cpu: 100m}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: init-container-without-limits
+  namespace: apps
+spec:
+  initContainers:
+    - name: init
+      image: registry.example/app:1
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+  containers:
+    - name: app
+      image: registry.example/app:1
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {cpu: 100m, memory: 32Mi}
+---
+# Like no-resources, in a namespace the policy does not cover.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: outside-the-namespace
+  namespace: elsewhere
+spec:
+  containers:
+    - name: app
+      image: registry.example/app:1

@@ -1,0 +1,43 @@
+# "kyverno test" applies the policy to the Pods in pods.yaml without a
+# cluster, and compares what the policy says of each with what is expected
+# here. scripts/kyverno_test.sh runs it.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-requests-and-limits
+policies:
+  - ../../require-requests-and-limits.yaml
+resources:
+  - pods.yaml
+  - ../../../deploy/deployment.yaml
+results:
+  - policy: require-requests-and-limits
+    isValidatingPolicy: true
+    kind: Pod
+    resources:
+      - requests-and-limits
+    result: pass
+  - policy: require-requests-and-limits
+    isValidatingPolicy: true
+    kind: Pod
+    resources:
+      - no-resources
+      - no-limits
+      - no-memory-limit
+      - init-container-without-limits
+    result: fail
+  # The manifests this repository deploys have to pass their own policy. Their
+  # kind is a Deployment: this is the check Kyverno derives for Pod controllers.
+  - policy: require-requests-and-limits
+    isValidatingPolicy: true
+    kind: Deployment
+    resources:
+      - signed-image-pipeline
+    result: pass
+  # The policy is for the apps namespace and says nothing of a Pod elsewhere.
+  - policy: require-requests-and-limits
+    isValidatingPolicy: true
+    kind: Pod
+    resources:
+      - outside-the-namespace
+    result: skip

@@ -132,6 +132,31 @@ jobs:
       - name: Check every exception has a reason and expires within 90 days
         run: python scripts/check_scan_exceptions.py .trivyignore.yaml
 
+  # The admission policies, tried without a cluster. Kyverno's CLI gives the
+  # validate policy Pods it has to pass and Pods it has to fail, and asks the
+  # image policy about two real images: the release that deploy/ pins, which
+  # it has to accept, and an image from elsewhere, which it has to refuse.
+  # For those two it reads the registries and Sigstore's trust root, so the
+  # test is tried again if it fails. It cannot pass by accident: a registry
+  # that does not answer is an error, and neither of the expected results.
+  policy:
+    name: kyverno test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load the pinned tool images
+        run: grep -E '^[A-Z][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+
+      - name: Fetch the Kyverno CLI
+        run: python3 scripts/retry.py docker pull --quiet "$KYVERNO_CLI_IMAGE"
+
+      - name: Test the policies against their fixtures
+        run: python3 scripts/retry.py scripts/kyverno_test.sh
+
   image:
     name: docker build and trivy
     runs-on: ubuntu-24.04

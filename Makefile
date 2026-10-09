@@ -1,8 +1,12 @@
-# Local entry points. They need docker and nothing else.
+# Local entry points.
 #
 #   make build    build the image as signed-image-pipeline:local
-#   make scan     build it and run the scan gate on it
+#   make test     unit tests, the scan exceptions and the policy fixtures
+#   make scan     build the image and run the scan gate on it
 #   make verify   check who signed a published image and attested its SBOM
+#
+# build, scan and verify need docker and nothing else. test also needs the
+# Python packages of app/requirements-dev.txt.
 
 # The pinned tool images: the file the workflows load.
 include versions.env
@@ -25,10 +29,19 @@ ISSUER := https://token.actions.githubusercontent.com
 export COSIGN_IMAGE
 export COSIGN_HOME ?= $(CURDIR)/.cache/cosign
 
-.PHONY: build scan verify
+# scripts/kyverno_test.sh runs the pinned Kyverno CLI.
+export KYVERNO_CLI_IMAGE
+
+.PHONY: build test scan verify
 
 build:
 	docker build --build-arg "REVISION=$(REVISION)" --tag "$(IMAGE)" .
+
+# What ci.yml checks without building an image, less the linters.
+test:
+	python3 -m pytest
+	python3 scripts/check_scan_exceptions.py .trivyignore.yaml
+	scripts/kyverno_test.sh
 
 # The gate of ci.yml, with the same flags: Trivy reads the image from a
 # read-only tarball and fails on a fixable High or Critical finding that

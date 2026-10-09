@@ -1,0 +1,31 @@
+# The image policy, asked without a cluster about two real images. Kyverno's
+# CLI reads the registries and Sigstore's trust root as the admission
+# controller does, so this test needs the network.
+#
+# It is what a pull request can check: no pull request can make the trusted
+# signature, but any can ask whether the policy still accepts the release that
+# deploy/ pins. The accept and reject cases on a cluster run only after a
+# merge, in the admission job of release.yml.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: verify-release-image
+policies:
+  - ../../verify-release-image.yaml
+resources:
+  - ../../../deploy/deployment.yaml
+  - pods.yaml
+results:
+  # The manifests as committed: the digest they pin must be a release.
+  - policy: verify-release-image
+    isImageValidatingPolicy: true
+    kind: Deployment
+    resources:
+      - signed-image-pipeline
+    result: pass
+  - policy: verify-release-image
+    isImageValidatingPolicy: true
+    kind: Pod
+    resources:
+      - image-from-another-registry
+    result: fail
