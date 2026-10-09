@@ -1,0 +1,145 @@
+name: release
+
+# Every push to main or to a work-in-progress branch, and on demand. A pull
+# request never starts this workflow, because every run publishes images.
+on:
+  push:
+    branches:
+      - main
+      - "wip/**"
+  workflow_dispatch:
+
+# What a job gets unless it asks for more. Only the job that pushes images
+# asks, and it says why.
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes the run already in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Naming bash explicitly makes every script run with -e and -o pipefail.
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE: ghcr.io/shubhroses/signed-image-pipeline
+  # Images that must be refused, kept out of the package that holds releases.
+  FIXTURES: ghcr.io/shubhroses/signed-image-pipeline-fixtures
+
+jobs:
+  build:
+    name: build and push
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write # to push to GHCR
+    outputs:
+      # Each is a complete reference, NAME@sha256:DIGEST. Later jobs use these
+      # and never a tag, so they all act on exactly what was built here.
+      image: ${{ steps.push.outputs.image }}
+      fixture-unsigned: ${{ steps.push.outputs.fixture-unsigned }}
+      fixture-wrong-signer: ${{ steps.push.outputs.fixture-wrong-signer }}
+      fixture-no-sbom: ${{ steps.push.outputs.fixture-no-sbom }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Docker can attach a build attestation to an image, and then pushes an
+      # index that holds the two. Without one it pushes a single image
+      # manifest, so the digest recorded below is the digest of the image.
+      - name: Build the image
+        run: |
+          docker build --provenance=false \
+            --build-arg "REVISION=$GITHUB_SHA" \
+            --tag "$IMAGE:$GITHUB_SHA" .
+
+      # Each fixture is the image above with one more label. The label gives
+      # it a digest of its own, so that whatever is later attached to one
+      # digest says nothing about another, and it leaves the content the same,
+      # so that the only reason to refuse a fixture is how it was signed.
+      # Nothing signs any of them yet.
+      - name: Build the negative fixtures
+        run: |
+          for fixture in unsigned wrong-signer no-sbom; do
+            docker build --quiet --provenance=false \
+              --build-arg "REVISION=$GITHUB_SHA" \
+              --label "org.opencontainers.image.description=Negative test fixture ($fixture). Not a release: the admission policy must refuse it." \
+              --tag "$FIXTURES:$fixture-$GITHUB_SHA" .
+          done
+
+      # After the builds, so that the token is not on disk while the
+      # Dockerfile runs.
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
+
+      - name: Push the images and record their digests
+        id: push
+        run: |
+          # $1 is the name of a job output and $2 the tag to push. Docker
+          # records the digest of what it pushed under RepoDigests.
+          push() {
+            python3 scripts/retry.py docker push --quiet "$2"
+            reference="$(docker image inspect --format '{{index .RepoDigests 0}}' "$2")"
+            echo "$1=$reference" | tee -a "$GITHUB_OUTPUT"
+          }
+          push image "$IMAGE:$GITHUB_SHA"
+          for fixture in unsigned wrong-signer no-sbom; do
+            push "fixture-$fixture" "$FIXTURES:$fixture-$GITHUB_SHA"
+          done
+
+      - name: Summarise
+        env:
+          RELEASE: ${{ steps.push.outputs.image }}
+          UNSIGNED: ${{ steps.push.outputs.fixture-unsigned }}
+          WRONG_SIGNER: ${{ steps.push.outputs.fixture-wrong-signer }}
+          NO_SBOM: ${{ steps.push.outputs.fixture-no-sbom }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Images
+
+          Built from commit \`$GITHUB_SHA\` and pushed to GHCR.
+
+          | Image | Reference |
+          |---|---|
+          | Release | \`$RELEASE\` |
+          | Fixture: unsigned | \`$UNSIGNED\` |
+          | Fixture: wrong signer | \`$WRONG_SIGNER\` |
+          | Fixture: no SBOM | \`$NO_SBOM\` |
+          EOF
+
+  # Whoever uses these images arrives without credentials: a cluster that
+  # pulls one, or a reader who checks one. A new GHCR package can start out
+  # private, and a private image fails every later check for the wrong
+  # reason, because nobody can read it. A fixture has to be refused for how
+  # it was signed, so each image is first shown to be readable by anyone.
+  pull:
+    name: anonymous pull
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RELEASE: ${{ needs.build.outputs.image }}
+      UNSIGNED: ${{ needs.build.outputs.fixture-unsigned }}
+      WRONG_SIGNER: ${{ needs.build.outputs.fixture-wrong-signer }}
+      NO_SBOM: ${{ needs.build.outputs.fixture-no-sbom }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Docker reads its logins from its configuration directory. Pointed at
+      # an empty one, it has no credentials to send.
+      - name: Pull every image by digest without credentials
+        run: |
+          mkdir "$RUNNER_TEMP/no-credentials"
+          for reference in "$RELEASE" "$UNSIGNED" "$WRONG_SIGNER" "$NO_SBOM"; do
+            python3 scripts/retry.py \
+              docker --config "$RUNNER_TEMP/no-credentials" pull --quiet "$reference"
+          done
