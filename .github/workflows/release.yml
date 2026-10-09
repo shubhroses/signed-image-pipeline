@@ -9,8 +9,8 @@ on:
       - "wip/**"
   workflow_dispatch:
 
-# What a job gets unless it asks for more. Only the job that pushes images
-# asks, and it says why.
+# What a job gets unless it asks for more. Only the two jobs that write to
+# the registry ask, and each says why.
 permissions:
   contents: read
 
@@ -28,6 +28,10 @@ env:
   IMAGE: ghcr.io/shubhroses/signed-image-pipeline
   # Images that must be refused, kept out of the package that holds releases.
   FIXTURES: ghcr.io/shubhroses/signed-image-pipeline-fixtures
+  # The one signer to trust: this workflow, run on main. Sigstore writes the
+  # workflow and the ref of the run that asked into the signing certificate,
+  # on the word of the issuer, which is GitHub's token service.
+  TRUSTED_IDENTITY: https://github.com/shubhroses/signed-image-pipeline/.github/workflows/release.yml@refs/heads/main
 
 jobs:
   # The same check as in ci.yml. This workflow does not wait for that one, so
@@ -86,7 +90,8 @@ jobs:
       # it a digest of its own, so that whatever is later attached to one
       # digest says nothing about another, and it leaves the content the same,
       # so that the only reason to refuse a fixture is how it was signed.
-      # Nothing signs any of them yet.
+      # The sign job leaves one unsigned and signs the other two, each short
+      # of a release in its own way.
       - name: Build the negative fixtures
         run: |
           for fixture in unsigned wrong-signer no-sbom; do
@@ -275,3 +280,139 @@ jobs:
           name: sbom
           path: ${{ runner.temp }}/sbom.spdx.json
           if-no-files-found: error
+
+  # Reached only when the scan job has passed: the exceptions are in order,
+  # every image can be read by anyone and the gate found nothing it fails on.
+  # So a signature made here says "built by this workflow, and it passed the
+  # gate". It does not say the image is safe.
+  #
+  # No key is stored anywhere. For each signature cosign asks GitHub for a
+  # short-lived token that names this workflow and the ref it runs on, and
+  # shows it to Sigstore's certificate authority, which issues a certificate
+  # that lasts ten minutes for a key made for that one command. The signed
+  # statement, the certificate and the proof that Sigstore's public log has
+  # recorded them go into GHCR next to the image, and the key is forgotten.
+  sign:
+    name: sign and attest
+    needs: [build, scan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # to ask GitHub for the token that says who is signing
+      packages: write # cosign stores what it signs in GHCR, next to the image
+    env:
+      RELEASE: ${{ needs.build.outputs.image }}
+      NO_SBOM: ${{ needs.build.outputs.fixture-no-sbom }}
+      WRONG_SIGNER: ${{ needs.build.outputs.fixture-wrong-signer }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # scripts/cosign.sh runs the pinned cosign with one directory as its
+      # home and working directory. A file named without a path in the steps
+      # below is in that directory.
+      - name: Load the pinned tool images and name a directory for cosign
+        run: |
+          grep -E '^[A-Z][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+          echo "COSIGN_HOME=$RUNNER_TEMP/cosign" >> "$GITHUB_ENV"
+
+      # The SBOM the scan job wrote from the image. That job keeps it only
+      # when the gate has passed.
+      - name: Fetch the SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/cosign
+
+      - name: Fetch cosign
+        run: python3 scripts/retry.py docker pull --quiet "$COSIGN_IMAGE"
+
+      - name: Log cosign in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/cosign.sh login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
+
+      # --yes answers the question cosign would ask first: whether the
+      # identity may be recorded in a public log, for good. --bundle writes
+      # what goes into the registry to a file as well, for the summary below.
+      - name: Sign the image
+        run: |
+          python3 scripts/retry.py scripts/cosign.sh sign --yes \
+            --bundle release-signature.json "$RELEASE"
+
+      # An attestation is a signed statement about the image: here, that this
+      # SBOM describes it. It is made and stored the way the signature is.
+      - name: Attest the SBOM
+        run: |
+          python3 scripts/retry.py scripts/cosign.sh attest --yes \
+            --type spdxjson --predicate sbom.spdx.json \
+            --bundle release-attestation.json "$RELEASE"
+
+      # Signed like a release and given no SBOM: the fixture that must be
+      # refused for the missing attestation alone.
+      - name: Sign the no-SBOM fixture
+        run: |
+          python3 scripts/retry.py scripts/cosign.sh sign --yes \
+            --bundle no-sbom-signature.json "$NO_SBOM"
+
+      # The only key in this project. It is made here, signs the one fixture
+      # and is deleted when the step ends, however the step ends. It has no
+      # password because nothing trusts it: there is nothing to protect. The
+      # last command checks the fixture against the public half, so that it is
+      # known to carry a sound signature whose only fault is who made it.
+      - name: Sign the wrong-signer fixture with a throwaway key
+        env:
+          COSIGN_PASSWORD: ""
+        run: |
+          trap 'rm -f "$COSIGN_HOME/throwaway.key"' EXIT
+          scripts/cosign.sh generate-key-pair --output-key-prefix throwaway
+          python3 scripts/retry.py scripts/cosign.sh sign --yes --key throwaway.key \
+            --bundle wrong-signer-signature.json "$WRONG_SIGNER"
+          python3 scripts/retry.py scripts/cosign.sh verify --key throwaway.pub "$WRONG_SIGNER"
+
+      - name: Check the throwaway key is gone
+        run: test ! -e "$COSIGN_HOME/throwaway.key"
+
+      # Read from what cosign stored, not from what this workflow expects:
+      # the identity is the one in each certificate, and the log entry is the
+      # one each bundle carries the proof of. Each value is assigned before it
+      # is used, so that a bundle without one stops the step.
+      - name: Summarise
+        run: |
+          # The identity in the certificate of a bundle.
+          signer() {
+            jq --raw-output --exit-status '.verificationMaterial.certificate.rawBytes' "$COSIGN_HOME/$1" \
+              | base64 --decode \
+              | openssl x509 -inform DER -noout -ext subjectAltName \
+              | grep URI: | sed 's/^ *URI://'
+          }
+          # A link to the entry Sigstore's log made for a bundle.
+          log_entry() {
+            jq --raw-output '
+              .verificationMaterial.tlogEntries[0].logIndex // error("no log entry")
+              | "[\(.)](https://search.sigstore.dev/?logIndex=\(.))"
+            ' "$COSIGN_HOME/$1"
+          }
+          release_signer="$(signer release-signature.json)"
+          release_entry="$(log_entry release-signature.json)"
+          sbom_signer="$(signer release-attestation.json)"
+          sbom_entry="$(log_entry release-attestation.json)"
+          no_sbom_signer="$(signer no-sbom-signature.json)"
+          no_sbom_entry="$(log_entry no-sbom-signature.json)"
+          wrong_signer_entry="$(log_entry wrong-signer-signature.json)"
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Signatures
+
+          Made after the gate passed, with no stored key. "Signed as" is the
+          identity in the certificate Sigstore issued for that signature. The
+          only one to trust is \`$TRUSTED_IDENTITY\`.
+
+          | Signed | Signed as | Transparency log entry |
+          |---|---|---|
+          | Release image | \`$release_signer\` | $release_entry |
+          | SBOM attestation for the release image | \`$sbom_signer\` | $sbom_entry |
+          | Fixture: no SBOM | \`$no_sbom_signer\` | $no_sbom_entry |
+          | Fixture: wrong signer | a key made and deleted in this job | $wrong_signer_entry |
+          EOF
