@@ -83,6 +83,13 @@ jobs:
           docker run --rm --volume "$PWD:/repo:ro" --workdir /repo \
             "$ACTIONLINT_IMAGE" -color
 
+      # actionlint runs shellcheck on the scripts inside the workflows. The
+      # image carries shellcheck for that, so it checks the script files too.
+      - name: Lint the shell scripts
+        run: |
+          docker run --rm --volume "$PWD:/repo:ro" --workdir /repo \
+            --entrypoint shellcheck "$ACTIONLINT_IMAGE" scripts/*.sh
+
   gitleaks:
     name: gitleaks
     runs-on: ubuntu-24.04
