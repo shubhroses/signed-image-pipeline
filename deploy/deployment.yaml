@@ -28,7 +28,7 @@ spec:
       containers:
         - name: app
           # A digest names one image for good; a tag can be moved. This one
-          # is the release built from commit 756ac66 on main.
+          # is the release built from commit 6989a71 on main.
           #
           # A release cannot write its own digest here, because the digest
           # does not exist until the commit is built. So the pin is moved by
@@ -38,7 +38,7 @@ spec:
           # fails if it is not a release. The admission job of each release
           # runs these manifests with this line set to the image it has just
           # built, so a new image is tried here before anyone pins it.
-          image: ghcr.io/shubhroses/signed-image-pipeline@sha256:603f05615a262fe51728bead0d9a6b45f54bc6298be3561cba92e64326fc87fd
+          image: ghcr.io/shubhroses/signed-image-pipeline@sha256:f2643461ef6f567aeaa387ef744d791ff02ace009495afc54969f7c02beee1dc
           ports:
             - name: http
               containerPort: 8080
