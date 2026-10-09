@@ -5,7 +5,8 @@ name: rescan
 #
 # A release is scanned once, on the day it is made. This workflow looks after
 # what changes later without a push: vulnerabilities that become known, or
-# get a fix, in an image that is already released.
+# get a fix, in an image that is already released, and the test fixtures that
+# every run of the release workflow leaves in the registry.
 #
 # Nothing here builds, signs or releases, and a finding does not fail the run.
 # It becomes an issue, and main stays as green or as red as its last push
@@ -286,4 +287,74 @@ jobs:
             else
               echo "None opened: the rescan found nothing that an open issue does not name already."
             fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Every run of the release workflow pushes three fixtures. Signing two of
+  # them adds more versions to the package, because the registry keeps each
+  # signature as a small image of its own, next to a list of what is attached
+  # to the image that was signed. Only the run that made them uses any of
+  # this, so what is old is deleted here. The package that holds the releases
+  # is never touched.
+  #
+  # A version goes when it was made more than KEEP_DAYS days before the newest
+  # one. Counting from the newest version, and not from today, keeps the
+  # fixtures of the last run however long ago that was, so the package is
+  # never emptied. Thirty days is how long GitHub lets a job of a run be run
+  # again, and such a job looks for the fixtures its run built. One that had
+  # been deleted would be refused for not being there, which is not what the
+  # test is about.
+  retention:
+    name: prune old fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write # to delete versions of the fixtures package
+    env:
+      VERSIONS: /users/shubhroses/packages/container/signed-image-pipeline-fixtures/versions
+      KEEP_DAYS: 30
+    steps:
+      # gh prints one JSON array for each page of the list, and jq joins
+      # them. The package is never empty, so a list with nothing in it means
+      # the list could not be read, and the job stops.
+      - name: List the versions of the fixtures package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "$VERSIONS?per_page=100" | jq --slurp add > "$RUNNER_TEMP/versions.json"
+          jq --raw-output '
+            "The package has \(length) versions, made between "
+            + "\(map(.created_at) | min) and \(map(.created_at) | max)."
+          ' "$RUNNER_TEMP/versions.json"
+          jq --exit-status 'length > 0' "$RUNNER_TEMP/versions.json" > /dev/null
+
+      # A date that jq cannot read stops the step: nothing is deleted on a
+      # guess.
+      - name: Choose the versions made long before the newest
+        run: |
+          jq --argjson days "$KEEP_DAYS" '
+            (map(.created_at | fromdate) | max) as $newest
+            | map(select((.created_at | fromdate) < $newest - $days * 86400))
+          ' "$RUNNER_TEMP/versions.json" > "$RUNNER_TEMP/old.json"
+          jq --raw-output '
+            .[] | "\(.id)  \(.created_at)  \(.metadata.container.tags | join(" "))"
+          ' "$RUNNER_TEMP/old.json"
+
+      - name: Delete them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in $(jq '.[].id' "$RUNNER_TEMP/old.json"); do
+            gh api --method DELETE "$VERSIONS/$id"
+          done
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Fixtures"
+            echo
+            jq --raw-output --slurpfile old "$RUNNER_TEMP/old.json" --arg days "$KEEP_DAYS" '
+              "The fixtures package had \(length) versions, the newest made at "
+              + "\(map(.created_at) | max). Deleted \($old[0] | length) that were made "
+              + "more than \($days) days before it."
+            ' "$RUNNER_TEMP/versions.json"
           } >> "$GITHUB_STEP_SUMMARY"
