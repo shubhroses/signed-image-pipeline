@@ -35,3 +35,34 @@ spec:
   containers:
     - name: app
       image: ghcr.io/shubhroses/signed-image-pipeline@sha256:37c28fd782d78ca023c903a115000a8f52eeef22d1cfa1f1adfc5e3ee0450803
+---
+# Every image of a Pod is checked, not only the first one. Here the container
+# runs a release, the one built from commit 6989a71, and the init container
+# runs the image from the other registry.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: init-container-from-another-registry
+  namespace: apps
+spec:
+  initContainers:
+    - name: init
+      image: registry.k8s.io/pause:3.10.1@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c
+  containers:
+    - name: app
+      image: ghcr.io/shubhroses/signed-image-pipeline@sha256:f2643461ef6f567aeaa387ef744d791ff02ace009495afc54969f7c02beee1dc
+---
+# The control for the Pod above. With the release in both places it passes, so
+# what is refused above is the image and not the use of an init container.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: release-in-init-container
+  namespace: apps
+spec:
+  initContainers:
+    - name: init
+      image: ghcr.io/shubhroses/signed-image-pipeline@sha256:f2643461ef6f567aeaa387ef744d791ff02ace009495afc54969f7c02beee1dc
+  containers:
+    - name: app
+      image: ghcr.io/shubhroses/signed-image-pipeline@sha256:f2643461ef6f567aeaa387ef744d791ff02ace009495afc54969f7c02beee1dc

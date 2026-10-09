@@ -28,6 +28,13 @@ results:
     isImageValidatingPolicy: true
     kind: Pod
     resources:
+      - release-in-init-container
+    result: pass
+  - policy: verify-release-image
+    isImageValidatingPolicy: true
+    kind: Pod
+    resources:
       - image-from-another-registry
       - image-signed-on-a-branch
+      - init-container-from-another-registry
     result: fail
