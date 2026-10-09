@@ -1,6 +1,10 @@
-# The image is OUTSIDE_IMAGE of versions.env: public, in another registry, and
-# properly signed, by the Kubernetes release team. The policy has to refuse it
-# all the same, because the signer is not this repository's release workflow.
+# Fixtures for kyverno-test.yaml, each named after what it shows. The images
+# are real and pinned by digest: the CLI reads their registries to judge them.
+#
+# This image is OUTSIDE_IMAGE of versions.env: public, in another registry,
+# and signed by its publisher, the Kubernetes release team. Nothing attached
+# to it names this repository's release workflow, so the policy has to refuse
+# it.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -10,3 +14,24 @@ spec:
   containers:
     - name: app
       image: registry.k8s.io/pause:3.10.1@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c
+---
+# The nearest thing to a release that is not one. This image was built, signed
+# and attested by release.yml of this repository, in a rehearsal on the branch
+# wip/s7. It has the repository, the workflow file and the issuer of a
+# release, a signature and an SBOM attestation. Only the ref in its
+# certificate differs: refs/heads/wip/s7, where a release has refs/heads/main.
+# A policy that trusted the workflow on every ref would accept it, so this is
+# the fixture that tells "on main" from "on a branch".
+#
+# Nothing prunes the package that holds it. If it is ever deleted, the CLI
+# reports an error for this Pod, which is not the result expected here, and
+# the test fails: pin the image of another rehearsal then.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: image-signed-on-a-branch
+  namespace: apps
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/shubhroses/signed-image-pipeline@sha256:37c28fd782d78ca023c903a115000a8f52eeef22d1cfa1f1adfc5e3ee0450803

@@ -1,11 +1,12 @@
-# The image policy, asked without a cluster about two real images. Kyverno's
-# CLI reads the registries and Sigstore's trust root as the admission
-# controller does, so this test needs the network.
+# The image policy, asked without a cluster about real images. Kyverno's CLI
+# reads the registries and Sigstore's trust root as the admission controller
+# does, so this test needs the network.
 #
 # It is what a pull request can check: no pull request can make the trusted
 # signature, but any can ask whether the policy still accepts the release that
-# deploy/ pins. The accept and reject cases on a cluster run only after a
-# merge, in the admission job of release.yml.
+# deploy/ pins, and still refuses an image that the same workflow signed on a
+# branch. The accept and reject cases on a cluster run only after a merge, in
+# the admission job of release.yml.
 apiVersion: cli.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -28,4 +29,5 @@ results:
     kind: Pod
     resources:
       - image-from-another-registry
+      - image-signed-on-a-branch
     result: fail

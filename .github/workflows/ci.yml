@@ -134,11 +134,12 @@ jobs:
 
   # The admission policies, tried without a cluster. Kyverno's CLI gives the
   # validate policy Pods it has to pass and Pods it has to fail, and asks the
-  # image policy about two real images: the release that deploy/ pins, which
-  # it has to accept, and an image from elsewhere, which it has to refuse.
-  # For those two it reads the registries and Sigstore's trust root, so the
-  # test is tried again if it fails. It cannot pass by accident: a registry
-  # that does not answer is an error, and neither of the expected results.
+  # image policy about real images: the release that deploy/ pins, which it
+  # has to accept, and two it has to refuse, an image from elsewhere and one
+  # that the release workflow signed on a branch and not on main. For these
+  # it reads the registries and Sigstore's trust root, so the test is tried
+  # again if it fails. It cannot pass by accident: a registry that does not
+  # answer is an error, and neither of the expected results.
   policy:
     name: kyverno test
     runs-on: ubuntu-24.04
