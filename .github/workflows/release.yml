@@ -585,3 +585,121 @@ jobs:
             echo
             echo "    $refusal"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # What a cluster makes of the release. A kind cluster gets Kyverno at the
+  # pinned version, then the namespace and the two policies of policy/, and
+  # is offered eight workloads: two it has to accept and six it has to
+  # refuse, each for a stated reason (scripts/admission_cases.sh).
+  #
+  # The job has a read-only token and logs in nowhere. The cluster pulls the
+  # images, and Kyverno reads what is attached to them, as anybody can. Each
+  # step is a target of the Makefile, so that "make admission" does the same.
+  admission:
+    name: admission
+    needs: [build, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RELEASE: ${{ needs.build.outputs.image }}
+      UNSIGNED: ${{ needs.build.outputs.fixture-unsigned }}
+      WRONG_SIGNER: ${{ needs.build.outputs.fixture-wrong-signer }}
+      NO_SBOM: ${{ needs.build.outputs.fixture-no-sbom }}
+      # Where the Makefile has kind write the credentials of the test cluster,
+      # which is the only cluster in the file. The steps that call kubectl or
+      # helm themselves read it too.
+      KUBECONFIG: ${{ github.workspace }}/.cache/kubeconfig
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start a kind cluster and install Kyverno
+        run: make admission-cluster
+
+      # kubectl supports a cluster one minor version away from its own, and
+      # the runner's is further than that from the Kubernetes this test pins.
+      # The node image holds the kubectl of its own version, so the steps
+      # below use that one: client and cluster come from the same pinned image.
+      - name: Take kubectl from the node, at the version of the cluster
+        run: |
+          mkdir "$RUNNER_TEMP/bin"
+          docker cp signed-image-pipeline-control-plane:/usr/bin/kubectl "$RUNNER_TEMP/bin/kubectl"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # On main the policies are the files in policy/, untouched, so the image
+      # policy trusts the release workflow on main and nobody else.
+      - name: Apply the namespace and the policies exactly as committed
+        if: github.ref == 'refs/heads/main'
+        run: make admission-policy
+
+      # A run on another ref cannot sign as main: its images carry the
+      # identity of its own ref. So that the cases can be rehearsed before
+      # they run on main, the cluster of a rehearsal gets a copy of the
+      # policies in which that identity stands where the trusted one stood.
+      # Nothing else differs, and the copy is never used on main.
+      - name: Apply them with the identity of this ref as the one to trust
+        if: github.ref != 'refs/heads/main'
+        run: |
+          rehearsal="https://github.com/$GITHUB_WORKFLOW_REF"
+          mkdir "$RUNNER_TEMP/policy"
+          cp policy/*.yaml "$RUNNER_TEMP/policy/"
+          sed --in-place "s|$TRUSTED_IDENTITY|$rehearsal|" \
+            "$RUNNER_TEMP/policy/verify-release-image.yaml"
+          grep --fixed-strings "subject: $rehearsal" \
+            "$RUNNER_TEMP/policy/verify-release-image.yaml"
+          make admission-policy POLICY="$RUNNER_TEMP/policy"
+
+      # Read from the cluster, not from what this workflow asked for.
+      - name: Record what the cases run against
+        run: |
+          kubernetes="$(kubectl version --output json | jq --raw-output --exit-status \
+            '"\(.serverVersion.gitVersion), with kubectl \(.clientVersion.gitVersion)"')"
+          kyverno="$(kubectl --namespace kyverno get deployment kyverno-admission-controller \
+            --output jsonpath='{.spec.template.spec.containers[0].image}')"
+          chart="$(helm --namespace kyverno list --output json \
+            | jq --raw-output --exit-status '.[0].chart')"
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            policies="exactly as committed"
+          else
+            policies="as committed, except that on this rehearsal the image policy trusts \`https://github.com/$GITHUB_WORKFLOW_REF\`"
+          fi
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Admission test
+
+          - Image: \`$RELEASE\`
+          - Cluster: $(kind version | cut -d ' ' -f 1-2), Kubernetes $kubernetes
+          - Kyverno: \`$kyverno\`, installed from the chart \`$chart\`
+          - Namespace and policies: \`policy/\` $policies
+
+          EOF
+
+      - name: Run the eight cases
+        run: |
+          make admission-cases RELEASE="$RELEASE" UNSIGNED="$UNSIGNED" \
+            WRONG_SIGNER="$WRONG_SIGNER" NO_SBOM="$NO_SBOM"
+
+      # The table has a row for every case, whether or not it went as
+      # expected, so it is shown even when the step above has failed.
+      - name: Summarise
+        if: always()
+        run: |
+          if [ -f .cache/admission.md ]; then
+            cat .cache/admission.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # For whoever has to find out why a case went wrong, and for whoever
+      # wants to see Kyverno's side of a run that went right. The API server
+      # passes on the message of the policy that refused a Pod; the last
+      # command shows what Kyverno's verifier found wrong with each image.
+      # Nothing here decides anything, so no command in it may fail the job.
+      - name: Show the cluster's side
+        if: always()
+        run: |
+          set +e
+          kubectl get imagevalidatingpolicies,validatingpolicies
+          kubectl get pods --all-namespaces --output wide
+          kubectl --namespace apps get events --sort-by .lastTimestamp
+          kubectl --namespace kyverno logs deployment/kyverno-admission-controller --tail 200
+          kubectl --namespace kyverno logs deployment/kyverno-admission-controller \
+            | grep "image verification failed"
+          exit 0
