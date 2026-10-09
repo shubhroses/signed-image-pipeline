@@ -1,0 +1,28 @@
+# Scan exceptions: findings the Trivy gate is told to accept, and until when.
+#
+# This is Trivy's YAML ignore file. The gate fails on a fixable High or
+# Critical finding unless the finding is listed here, so every entry is a
+# decision to ship a known vulnerability and every change deserves a review.
+#
+# scripts/check_scan_exceptions.py fails CI unless each entry has:
+#
+#   id          the finding as Trivy prints it, such as a CVE or GHSA number
+#   statement   the reason the finding is acceptable for this service
+#   expired_at  the day the exception ends, at most 90 days ahead. From that
+#               day (UTC) Trivy reports the finding again, and the checker
+#               fails until the entry is removed or reviewed and given a new
+#               date.
+#
+# "purls" is optional and limits an entry to one package. With a version in
+# it, the exception also ends when the package is updated. Trivy's JSON report
+# shows the purl of each finding.
+#
+#   vulnerabilities:
+#     - id: CVE-YYYY-NNNNN
+#       purls:
+#         - pkg:pypi/NAME@VERSION
+#       statement: Why the finding does not matter here.
+#       expired_at: YYYY-MM-DD
+#
+# Nothing is accepted at the moment.
+vulnerabilities: []

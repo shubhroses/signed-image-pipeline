@@ -152,9 +152,15 @@ jobs:
 
       # Trivy reads the image from a read-only tarball. A scanner needs to see
       # the image; it does not need the Docker socket or the workspace.
+      # A finding listed in .trivyignore.yaml does not fail the gate, and
+      # --show-suppressed prints each one with its reason, so that what the
+      # gate let through is in the log of the run that let it through.
       - name: Fail on fixable High or Critical vulnerabilities
         run: |
           docker save --output "$RUNNER_TEMP/image.tar" "$IMAGE"
-          docker run --rm --volume "$RUNNER_TEMP/image.tar:/image.tar:ro" \
+          docker run --rm \
+            --volume "$RUNNER_TEMP/image.tar:/image.tar:ro" \
+            --volume "$PWD/.trivyignore.yaml:/.trivyignore.yaml:ro" \
             "$TRIVY_IMAGE" image --input /image.tar --no-progress \
-            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile /.trivyignore.yaml --show-suppressed
