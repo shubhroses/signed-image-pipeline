@@ -1,0 +1,38 @@
+# Every container in the apps namespace has to say how much CPU and memory it
+# asks for and how much it may use. Pod Security Admission has no rule about
+# resources, so this one is a Kyverno policy.
+#
+# As with the image policy, Kyverno derives the same check for Deployments,
+# Jobs and the other Pod controllers from a policy that matches Pods.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-requests-and-limits
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: apps
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+
+  # Init containers are scheduled and limited like the others. A Pod may have
+  # none, hence the optional field.
+  variables:
+    - name: allContainers
+      expression: object.spec.containers + object.spec.?initContainers.orValue([])
+
+  # ".?" reads a field that may be missing, and hasValue() says whether it
+  # was there. The message is what a refused request is told.
+  validations:
+    - expression: >-
+        variables.allContainers.all(c,
+          c.?resources.?requests.?cpu.hasValue() &&
+          c.?resources.?requests.?memory.hasValue() &&
+          c.?resources.?limits.?cpu.hasValue() &&
+          c.?resources.?limits.?memory.hasValue())
+      message: every container must set CPU and memory requests and limits

@@ -1,0 +1,16 @@
+# The namespace the service runs in, and the first of its three admission
+# controls. Pod Security Admission is built into Kubernetes and needs nothing
+# installed: these labels switch it on. "enforce" refuses any Pod that breaks
+# the "restricted" standard, which among other things forbids running as root,
+# gaining privileges, keeping a capability and going without a seccomp profile.
+#
+# The version says which release's definition of "restricted" applies, so an
+# upgrade of the cluster does not change the rules by itself. It is the
+# Kubernetes version of the test cluster (KIND_NODE_IMAGE in versions.env).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apps
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35

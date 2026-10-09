@@ -1,0 +1,94 @@
+# Only an image the release workflow vouches for may run in the apps
+# namespace. An image passes when both of these are attached to it:
+#   - a signature made by .github/workflows/release.yml of this repository,
+#     run on main, and
+#   - an SBOM attested by that same identity.
+# The workflow signs only after its scan gate has passed, so a signature means
+# "built by the workflow, and it passed the gate". It does not mean "safe".
+#
+# Kyverno applies this to a Pod when it is created or updated. From a policy
+# that matches Pods and nothing else it derives the same check for
+# Deployments, Jobs and the other Pod controllers, so a workload with the
+# wrong image is refused when it is submitted and not left failing to start.
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-release-image
+spec:
+  validationActions: [Deny]
+
+  # To check an image Kyverno reads its registry and Sigstore's trust root.
+  # That can take longer than the 10 seconds a webhook gets by default, so
+  # this one gets the most the API server allows.
+  webhookConfiguration:
+    timeoutSeconds: 30
+
+  # Cluster-wide, so that nobody with rights in the namespace alone can remove
+  # it, and limited to the namespace by the label Kubernetes itself puts on
+  # every namespace.
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: apps
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+
+  # Every image, whatever registry it comes from. A narrower pattern would let
+  # an image from anywhere else through unchecked.
+  matchImageReferences:
+    - glob: "*"
+
+  # These are the defaults, written out because the policy relies on each.
+  validationConfigurations:
+    mutateDigest: true # an image given by tag gets the digest the tag points at
+    verifyDigest: true # an image that still has no digest is refused
+    required: true # so is an image that no check below has verified
+
+  # Who must have signed. No key is involved: Sigstore issued a short-lived
+  # certificate for each signature, and the certificate names the workflow
+  # file and the ref it ran on, on the word of GitHub's token service.
+  attestors:
+    - name: release
+      cosign:
+        keyless:
+          identities:
+            - subject: https://github.com/shubhroses/signed-image-pipeline/.github/workflows/release.yml@refs/heads/main
+              issuer: https://token.actions.githubusercontent.com
+
+  # What must be attached to an image. cosign 3 stores a signature and an
+  # attestation alike: each is a statement about the image, of some type,
+  # signed by an identity. "cosign sign" attaches one of the first type below
+  # and "cosign attest --type spdxjson" one of the second.
+  attestations:
+    - name: signature
+      intoto:
+        type: https://sigstore.dev/cosign/sign/v1
+    - name: sbom
+      intoto:
+        type: https://spdx.dev/Document
+
+  # Init containers run code as well. So do ephemeral containers, but one of
+  # those is added to a running Pod through a subresource that this policy
+  # does not match, and is checked only when its Pod is next updated. RBAC
+  # decides who may add one: the built-in admin and edit roles may not.
+  variables:
+    - name: allImages
+      expression: images.containers + images.initContainers + images.ephemeralContainers
+
+  # The function returns how many of the listed attestors signed a statement
+  # of the type asked for. Kyverno has verifyImageSignatures() as well, but
+  # any statement satisfies that one, an SBOM as much as a signature, so it
+  # does not tell a signed image from one that was only attested.
+  # The messages are what a refused request is told.
+  validations:
+    - expression: >-
+        variables.allImages.all(image,
+          verifyAttestationSignatures(image, attestations.signature, [attestors.release]) > 0)
+      message: no signature by the release workflow on main
+    - expression: >-
+        variables.allImages.all(image,
+          verifyAttestationSignatures(image, attestations.sbom, [attestors.release]) > 0)
+      message: no SBOM attested by the release workflow on main
