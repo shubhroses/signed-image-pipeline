@@ -1,6 +1,8 @@
 # Dependabot keeps the pins of this repository moving: every Monday it opens
-# one pull request for each group below whose pins are behind. A pull request
-# runs ci.yml, and merging one is a push to main, which makes a release.
+# one pull request for each group below whose pins are behind. It leaves a new
+# version alone until that version has been out for three days. That wait is
+# Dependabot's default, and nothing here changes it. A pull request runs
+# ci.yml, and merging one is a push to main, which makes a release.
 #
 # This is also how main turns green again after the scan gate has failed on a
 # vulnerability that got a fix: the fix arrives as one of these pull requests.
@@ -42,7 +44,8 @@ updates:
   # under the same tag is how a rebuilt base image arrives, and with it the
   # fixes for the system packages. A newer Python is not taken from here: the
   # locks, the workflows and the runtime image name the same minor version and
-  # have to move with it.
+  # have to move with it. Dependabot finds no publication date for an image on
+  # gcr.io, so a new digest of the runtime image is proposed without the wait.
   - package-ecosystem: docker
     directory: /
     schedule:
