@@ -7,8 +7,9 @@
 #   make admission   try the accept and reject cases on a kind cluster
 #
 # build, scan and verify need docker and nothing else. test also needs the
-# Python packages of app/requirements-dev.txt. admission also needs kind,
-# kubectl, helm and jq, and makes a cluster of its own to run in.
+# Python packages of both locks in app/: the unit tests import the app.
+# admission also needs kind, kubectl, helm and jq, and makes a cluster of its
+# own to run in.
 
 # The pinned tool images: the file the workflows load.
 include versions.env
