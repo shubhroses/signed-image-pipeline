@@ -37,4 +37,5 @@ results:
       - image-from-another-registry
       - image-signed-on-a-branch
       - init-container-from-another-registry
+      - ephemeral-container-from-another-registry
     result: fail

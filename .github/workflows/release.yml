@@ -587,9 +587,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # What a cluster makes of the release. A kind cluster gets Kyverno at the
-  # pinned version, then the namespace and the two policies of policy/, and
-  # is offered eight workloads: two it has to accept and six it has to
-  # refuse, each for a stated reason (scripts/admission_cases.sh).
+  # pinned version, then the namespace and the three policies of policy/,
+  # and is put through nine cases: two workloads it has to accept and seven
+  # requests it has to refuse, each for a stated reason
+  # (scripts/admission_cases.sh).
   #
   # The job has a read-only token and logs in nowhere. The cluster pulls the
   # images, and Kyverno reads what is attached to them, as anybody can. Each
@@ -673,7 +674,7 @@ jobs:
 
           EOF
 
-      - name: Run the eight cases
+      - name: Run the nine cases
         run: |
           make admission-cases RELEASE="$RELEASE" UNSIGNED="$UNSIGNED" \
             WRONG_SIGNER="$WRONG_SIGNER" NO_SBOM="$NO_SBOM"

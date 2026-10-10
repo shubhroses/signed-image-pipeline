@@ -70,10 +70,11 @@ spec:
       intoto:
         type: https://spdx.dev/Document
 
-  # Init containers run code as well. So do ephemeral containers, but one of
-  # those is added to a running Pod through a subresource that this policy
-  # does not match, and is checked only when its Pod is next updated. RBAC
-  # decides who may add one: the built-in admin and edit roles may not.
+  # Init containers run code as well, and so do ephemeral containers. One of
+  # those is added to a running Pod by a request of its own, which the rule
+  # above does not match: no-ephemeral-containers.yaml refuses that request.
+  # They are listed here all the same, so that a Pod which has one is checked
+  # in full whenever it is updated.
   variables:
     - name: allImages
       expression: images.containers + images.initContainers + images.ephemeralContainers

@@ -127,15 +127,16 @@ admission-cluster:
 		--kube-context "kind-$(CLUSTER)" --namespace kyverno --create-namespace \
 		--wait --timeout 5m
 
-# The namespace and the two policies, exactly as the files in policy/ have
-# them, and then a wait until Kyverno reports that it enforces both. Only a
+# The namespace and the three policies, exactly as the files in policy/ have
+# them, and then a wait until Kyverno reports that it enforces each. Only a
 # rehearsal of the release workflow on another ref passes another POLICY.
 admission-policy:
 	python3 scripts/retry.py $(KUBECTL) apply --filename "$(POLICY)/"
 	python3 scripts/retry.py $(KUBECTL) wait --timeout=120s \
 		--for=jsonpath='{.status.conditionStatus.ready}'=true \
 		imagevalidatingpolicy/verify-release-image \
-		validatingpolicy/require-requests-and-limits
+		validatingpolicy/require-requests-and-limits \
+		validatingpolicy/no-ephemeral-containers
 
 admission-cases:
 	scripts/admission_cases.sh

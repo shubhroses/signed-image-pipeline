@@ -66,3 +66,21 @@ spec:
   containers:
     - name: app
       image: ghcr.io/shubhroses/signed-image-pipeline@sha256:f2643461ef6f567aeaa387ef744d791ff02ace009495afc54969f7c02beee1dc
+---
+# No ephemeral container can be added to a Pod in the namespace any more
+# (no-ephemeral-containers.yaml), but a Pod may have been given one before
+# that policy was there. The image policy reads its image too whenever such a
+# Pod is updated. Here the container runs a release and the ephemeral
+# container runs the image from the other registry.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ephemeral-container-from-another-registry
+  namespace: apps
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/shubhroses/signed-image-pipeline@sha256:f2643461ef6f567aeaa387ef744d791ff02ace009495afc54969f7c02beee1dc
+  ephemeralContainers:
+    - name: debug
+      image: registry.k8s.io/pause:3.10.1@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c

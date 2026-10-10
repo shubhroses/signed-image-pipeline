@@ -1,0 +1,46 @@
+# No container may be added to a Pod that is already running in the apps
+# namespace.
+#
+# An ephemeral container is how "kubectl debug" gets into a running Pod. It is
+# added by an update of a subresource of the Pod, pods/ephemeralcontainers,
+# and a policy that matches "pods" is not asked about that request. So the
+# image policy does not see it, and without this file whoever may make the
+# request could run any image next to the service.
+#
+# The request is refused outright, and not checked like any other image, for
+# two reasons. The only image this namespace admits is the release, which has
+# no shell and no tools, so an ephemeral container that passed the image
+# policy would be of no use to anyone. And a refusal needs no registry and no
+# second copy of the image policy: Kyverno derives the check for Deployments
+# only from a policy that matches Pods and nothing else, so the subresource
+# could not simply be added to that one.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: no-ephemeral-containers
+spec:
+  validationActions: [Deny]
+
+  # Kyverno also goes over what is already in the cluster, in the background,
+  # and reports on it. A subresource cannot be listed, and Kyverno does not
+  # call a policy ready while its reports controller may not read what the
+  # policy matches. So this policy acts on requests only.
+  evaluation:
+    background:
+      enabled: false
+
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: apps
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["pods/ephemeralcontainers"]
+
+  # The request carries the Pod as it would be afterwards. An ephemeral
+  # container cannot be taken out again, so any such request adds one.
+  validations:
+    - expression: object.spec.?ephemeralContainers.orValue([]).size() == 0
+      message: no container may be added to a running Pod

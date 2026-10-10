@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# The eight cases of the admission test: two workloads the cluster has to
-# accept and six it has to refuse.
+# The nine cases of the admission test: two workloads the cluster has to
+# accept, and seven things it has to refuse.
 #
 # The cluster must already have Kyverno, the namespace and the policies; the
 # Makefile's admission targets see to that and call this. Every kubectl call
 # names the context that kind made for the test cluster, so that a kubeconfig
 # without it stops the script and no other cluster is ever asked.
 #
-# The first case rolls out deploy/ with the released image. Each of the others
-# is a Pod made from the Pod template of that Deployment with one thing
+# The first case rolls out deploy/ with the released image. Each of the next
+# seven is a Pod made from the Pod template of that Deployment with one thing
 # changed. The template has just been admitted and has become Ready, so a Pod
-# that is refused is refused for the one change. A refusal counts only when
-# the API server names the policy expected to refuse (scripts/expect_failure.py).
+# that is refused is refused for the one change. The last case tries to add a
+# container to a Pod that is already running. A refusal counts only when the
+# API server names the policy expected to refuse (scripts/expect_failure.py).
 #
-# All eight cases are tried even when one goes wrong. The table of what the
+# All nine cases are tried even when one goes wrong. The table of what the
 # cluster did is written to $RESULTS, and the script fails if any case did not
 # go as expected.
 #
@@ -31,12 +32,13 @@ set -euo pipefail
 
 kubectl=(kubectl --context "kind-$CLUSTER" --namespace apps)
 
-# What a refusal has to say. The first three are a policy's name and one of
+# What a refusal has to say. The first four are a policy's name and one of
 # its messages, as Kyverno reports them; the last is how Pod Security
 # Admission names the standard a Pod breaks.
 NOT_SIGNED="Policy verify-release-image failed: no signature by the release workflow on main"
 NO_SBOM_ATTESTED="Policy verify-release-image failed: no SBOM attested by the release workflow on main"
 NO_LIMITS="Policy require-requests-and-limits failed: every container must set CPU and memory requests and limits"
+NO_EPHEMERAL="Policy no-ephemeral-containers failed: no container may be added to a running Pod"
 POD_SECURITY='violates PodSecurity "restricted:'
 
 # The cases need the release by digest. Given by tag, it is looked up in the
@@ -155,6 +157,24 @@ refused() {
   fi
 }
 
+# Case i. An ephemeral container is added to a Pod that is already running,
+# which is what "kubectl debug" does. The request is not about a Pod but
+# about a subresource of one, so the image policy is not asked, and it is
+# policy/no-ephemeral-containers.yaml that has to refuse it. The container is
+# given the released image and the security settings that Pod Security
+# Admission requires, so that being ephemeral is all there is to refuse.
+ephemeral_refused() {
+  target="$("${kubectl[@]}" get pods --selector app.kubernetes.io/name=signed-image-pipeline \
+    --output jsonpath='{.items[0].metadata.name}')"
+  if answer="$(python3 scripts/expect_failure.py "$NO_EPHEMERAL" \
+    "${kubectl[@]}" debug "$target" --profile restricted --container case-i --image "$RELEASE")"; then
+    echo "Refused: \`${answer#Error from server: }\`"
+  else
+    echo "Not refused with \`$NO_EPHEMERAL\`. See the log of this step."
+    return 1
+  fi
+}
+
 try a "\`deploy/\` at the released digest" \
   "Rolls out and becomes Ready" \
   rolls_out
@@ -179,10 +199,13 @@ try g "The released image with \`runAsUser: 0\`" \
 try h "The released image without resource limits" \
   "Rejected by the validate policy" \
   refused case-h "$NO_LIMITS" "$RELEASE" 'del(.spec.containers[0].resources.limits)'
+try i "The released image as an ephemeral container in a running Pod" \
+  "Rejected by the policy against ephemeral containers" \
+  ephemeral_refused
 
 echo >&2
 cat "$RESULTS"
 if [ "$failures" -ne 0 ]; then
-  echo "admission_cases: $failures of the eight cases did not go as expected" >&2
+  echo "admission_cases: $failures of the nine cases did not go as expected" >&2
   exit 1
 fi
