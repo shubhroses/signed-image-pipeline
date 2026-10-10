@@ -23,9 +23,12 @@ spec:
 # A policy that trusted the workflow on every ref would accept it, so this is
 # the fixture that tells "on main" from "on a branch".
 #
-# Nothing prunes the package that holds it. If it is ever deleted, the CLI
-# reports an error for this Pod, which is not the result expected here, and
-# the test fails: pin the image of another rehearsal then.
+# It dates from when a rehearsal still pushed to the package that holds the
+# releases, which nothing prunes, so it stays. A rehearsal made today goes to
+# the fixtures package and is pruned with the fixtures, so its image could
+# not stand here for long. If this one is ever deleted, the CLI reports an
+# error for this Pod, which is not the result expected here, and the test
+# fails.
 apiVersion: v1
 kind: Pod
 metadata:

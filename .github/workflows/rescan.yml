@@ -289,12 +289,12 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Every run of the release workflow pushes three fixtures. Signing two of
-  # them adds more versions to the package, because the registry keeps each
-  # signature as a small image of its own, next to a list of what is attached
-  # to the image that was signed. Only the run that made them uses any of
-  # this, so what is old is deleted here. The package that holds the releases
-  # is never touched.
+  # Every run of the release workflow pushes three fixtures, and a rehearsal
+  # on a branch pushes its image to the same package. Signing adds more
+  # versions to it, because the registry keeps each signature as a small image
+  # of its own, next to a list of what is attached to the image that was
+  # signed. Only the run that made them uses any of this, so what is old is
+  # deleted here. The package that holds the releases is never touched.
   #
   # A version goes when it was made more than KEEP_DAYS days before the newest
   # one. Counting from the newest version, and not from today, keeps the

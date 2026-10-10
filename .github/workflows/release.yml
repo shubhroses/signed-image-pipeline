@@ -6,7 +6,8 @@ name: release
 # The images are signed as "this workflow, on the ref it ran on", and only
 # the identity of a run on main is to be trusted. So a run on main makes a
 # release and a run anywhere else is a rehearsal: the same jobs, checked
-# against the identity of its own ref, which nothing trusts.
+# against the identity of its own ref, which nothing trusts. A rehearsal
+# pushes nothing to the package that holds the releases (see the build job).
 on:
   push:
     branches:
@@ -30,8 +31,10 @@ defaults:
     shell: bash
 
 env:
+  # The package that holds the releases. Only a run on main pushes to it.
   IMAGE: ghcr.io/shubhroses/signed-image-pipeline
-  # Images that must be refused, kept out of the package that holds releases.
+  # The package for everything that must be refused: the three fixtures of
+  # every run, and all that a rehearsal builds.
   FIXTURES: ghcr.io/shubhroses/signed-image-pipeline-fixtures
   # The one signer to trust: this workflow, run on main. Sigstore writes the
   # workflow and the ref of the run that asked into the signing certificate,
@@ -78,10 +81,36 @@ jobs:
       fixture-unsigned: ${{ steps.push.outputs.fixture-unsigned }}
       fixture-wrong-signer: ${{ steps.push.outputs.fixture-wrong-signer }}
       fixture-no-sbom: ${{ steps.push.outputs.fixture-no-sbom }}
+      # The exception: the tag the image was pushed under, NAME:TAG, for the
+      # one admission case that has to start from a tag.
+      tag: ${{ steps.push.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # A release is tagged with its commit in the package that holds the
+      # releases, and only a run on main is a release. A run on any other ref
+      # pushes nothing to that package: its image goes to the fixtures package
+      # under a tag that starts "rehearsal-", and the tags of its fixtures
+      # start the same way. No release uses such a tag, so a rehearsal cannot
+      # move a tag that a release wrote, whatever commit its branch is at and
+      # however often it is run again. The pull job checks, for every
+      # rehearsal, that the release package was left alone.
+      #
+      # This is the workflow keeping to a rule, not the registry enforcing
+      # one: the token of this job may write to both packages on any ref. A
+      # branch that changed this file could push where it liked, which is why
+      # nothing here trusts a tag. What is trusted is the signer.
+      - name: Choose the tags to push under
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            echo "TAG=$IMAGE:$GITHUB_SHA"
+            echo "PREFIX="
+          else
+            echo "TAG=$FIXTURES:rehearsal-$GITHUB_SHA"
+            echo "PREFIX=rehearsal-"
+          fi | tee -a "$GITHUB_ENV"
 
       # Docker can attach a build attestation to an image, and then pushes an
       # index that holds the two. Without one it pushes a single image
@@ -90,7 +119,7 @@ jobs:
         run: |
           docker build --provenance=false \
             --build-arg "REVISION=$GITHUB_SHA" \
-            --tag "$IMAGE:$GITHUB_SHA" .
+            --tag "$TAG" .
 
       # Each fixture is the image above with one more label. The label gives
       # it a digest of its own, so that whatever is later attached to one
@@ -104,7 +133,7 @@ jobs:
             docker build --quiet --provenance=false \
               --build-arg "REVISION=$GITHUB_SHA" \
               --label "org.opencontainers.image.description=Negative test fixture ($fixture). Not a release: the admission policy must refuse it." \
-              --tag "$FIXTURES:$fixture-$GITHUB_SHA" .
+              --tag "$FIXTURES:$PREFIX$fixture-$GITHUB_SHA" .
           done
 
       # After the builds, so that the token is not on disk while the
@@ -124,10 +153,11 @@ jobs:
             reference="$(docker image inspect --format '{{index .RepoDigests 0}}' "$2")"
             echo "$1=$reference" | tee -a "$GITHUB_OUTPUT"
           }
-          push image "$IMAGE:$GITHUB_SHA"
+          push image "$TAG"
           for fixture in unsigned wrong-signer no-sbom; do
-            push "fixture-$fixture" "$FIXTURES:$fixture-$GITHUB_SHA"
+            push "fixture-$fixture" "$FIXTURES:$PREFIX$fixture-$GITHUB_SHA"
           done
+          echo "tag=$TAG" | tee -a "$GITHUB_OUTPUT"
 
       - name: Summarise
         env:
@@ -136,10 +166,15 @@ jobs:
           WRONG_SIGNER: ${{ steps.push.outputs.fixture-wrong-signer }}
           NO_SBOM: ${{ steps.push.outputs.fixture-no-sbom }}
         run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            kind="A release, tagged \`$TAG\`."
+          else
+            kind="A rehearsal on \`$GITHUB_REF\`, tagged \`$TAG\`. It pushes nothing to \`$IMAGE\`, the package that holds the releases, and the next job asks the registry whether that is so."
+          fi
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ### Images
 
-          Built from commit \`$GITHUB_SHA\` and pushed to GHCR.
+          Built from commit \`$GITHUB_SHA\` and pushed to GHCR. $kind
 
           | Image | Reference |
           |---|---|
@@ -178,6 +213,22 @@ jobs:
           for reference in "$RELEASE" "$UNSIGNED" "$WRONG_SIGNER" "$NO_SBOM"; do
             python3 scripts/retry.py \
               docker --config "$RUNNER_TEMP/no-credentials" pull --quiet "$reference"
+          done
+
+      # The build job gave a rehearsal other names to push under. This asks
+      # the registry whether it kept to them. A manifest can be read from the
+      # package it was pushed to and from no other, so if the release package
+      # does not know any of the four digests, this run wrote nothing there,
+      # under any tag. The registry has to say so in those words: a registry
+      # that cannot be reached proves nothing. (Two builds of one commit do
+      # not come out the same, so a digest made here is never one that a
+      # release has already pushed.)
+      - name: Check that a rehearsal pushed nothing to the release package
+        if: github.ref != 'refs/heads/main'
+        run: |
+          for reference in "$RELEASE" "$UNSIGNED" "$WRONG_SIGNER" "$NO_SBOM"; do
+            python3 scripts/expect_failure.py "manifest unknown" \
+              docker --config "$RUNNER_TEMP/no-credentials" manifest inspect "$IMAGE@${reference##*@}"
           done
 
   # Trivy runs from a pinned image and reads the released image from the
@@ -602,6 +653,7 @@ jobs:
     timeout-minutes: 20
     env:
       RELEASE: ${{ needs.build.outputs.image }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
       UNSIGNED: ${{ needs.build.outputs.fixture-unsigned }}
       WRONG_SIGNER: ${{ needs.build.outputs.fixture-wrong-signer }}
       NO_SBOM: ${{ needs.build.outputs.fixture-no-sbom }}
@@ -676,8 +728,8 @@ jobs:
 
       - name: Run the nine cases
         run: |
-          make admission-cases RELEASE="$RELEASE" UNSIGNED="$UNSIGNED" \
-            WRONG_SIGNER="$WRONG_SIGNER" NO_SBOM="$NO_SBOM"
+          make admission-cases RELEASE="$RELEASE" RELEASE_TAG="$RELEASE_TAG" \
+            UNSIGNED="$UNSIGNED" WRONG_SIGNER="$WRONG_SIGNER" NO_SBOM="$NO_SBOM"
 
       # The table has a row for every case, whether or not it went as
       # expected, so it is shown even when the step above has failed.
