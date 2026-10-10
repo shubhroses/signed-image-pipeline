@@ -157,7 +157,7 @@ The new policy was tried the same way, in the run linked under the table: with i
 
 - Signing needs GitHub's token service, Sigstore's public instance (its certificate authority, its transparency log, its timestamp authority and the mirror of its trust root) and GHCR. Verifying needs GHCR and the trust root. None of these is under this repository's control.
 - Most steps that only fetch or send something are tried three times, 10 and then 20 seconds apart. A check that has to fail is asked once, because a refusal is an answer. An outage longer than that fails the run.
-- In a real cluster the image policy makes the same services part of admission: creating a Pod in `apps` needs GHCR and the trust root to be reachable, and in the run above each such request took one or two seconds. What happens while one of them is down was not tested.
+- In a real cluster the image policy makes the same services part of admission: creating a Pod in `apps` needs GHCR and the trust root to be reachable, and waits for their answers. In the twelve runs of the admission test that had passed by 9 October 2026, on `main` and on branches, the Pod that was admitted by tag took 2 to 8 seconds to create and a Pod that the image policy refused took up to 5, by the test's own clock, which counts whole seconds and includes kubectl. In the run that made the release shown above each took one or two. What happens while one of those services is down was not tested.
 - Every release writes four entries to Sigstore's public transparency log, and they cannot be removed. Three of them name this repository, the workflow file and the ref.
 
 **What a pull request cannot test**
