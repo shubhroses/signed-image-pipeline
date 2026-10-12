@@ -1,7 +1,7 @@
 # Build stage: the official Python image, used only to install the locked
 # dependencies. The distroless project names this image as the build stage to
 # pair with python3-debian13, because both are Python 3.13 on Debian 13.
-FROM python:3.13-slim-trixie@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c AS build
+FROM python:3.13-slim-trixie@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f AS build
 
 COPY app/requirements.txt /tmp/requirements.txt
 
