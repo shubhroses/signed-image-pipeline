@@ -115,7 +115,7 @@ The four admission controls follow one rule: built-in admission where it has a r
 
 Two things are done everywhere and have no test of their own:
 
-- **Pinned inputs.** GitHub Actions by commit SHA, both base images and every tool image by digest, Kyverno by chart version, Python dependencies by hash. The tools are pinned in one file, [`versions.env`](versions.env); cosign 3.1.3 and Kyverno 1.19.1 move as a pair, because Kyverno has to read what cosign writes. Not pinned: what comes with the runner, such as docker, kind, helm, jq and gh, and the images that Kyverno's chart names by tag. Dependabot proposes updates for the actions, the Python locks and the base images. Nothing updates `versions.env`.
+- **Pinned inputs.** GitHub Actions by commit SHA, both base images and every tool image by digest, Kyverno by chart version, Python dependencies by hash. The tools are pinned in one file, [`versions.env`](versions.env); cosign 3.1.3 and Kyverno 1.19.1 move as a pair, because Kyverno has to read what cosign writes. Not pinned: what comes with the runner, such as docker, kind, helm, jq and gh, the images that Kyverno's chart names by tag, and Trivy's vulnerability database, of which every scan downloads the newest. Dependabot proposes updates for the actions, the Python locks and the base images. Nothing updates `versions.env`.
 - **Least privilege.** The token of every workflow is read-only unless a job asks for more, and five jobs do: `build and push` and `sign and attest` may write packages, and only the second may ask for the identity token that signing needs; in the rescan, one job may read workflow runs, one may write issues and one may delete package versions. The verify and admission jobs log in nowhere and read the registry as a stranger would.
 
 ## The accept and reject test
@@ -155,9 +155,25 @@ The policy against ephemeral containers was tried the same way, in [a run on ano
 
 **What every run depends on**
 
-- Signing needs GitHub's token service, Sigstore's public instance (its certificate authority, its transparency log, its timestamp authority and the mirror of its trust root) and GHCR. Verifying needs GHCR and the trust root. None of these is under this repository's control.
-- Most steps that only fetch or send something are tried three times, 10 and then 20 seconds apart. A check that has to fail is asked once, because a refusal is an answer. An outage longer than that fails the run.
-- In a real cluster the image policy makes the same services part of admission: creating a Pod in `apps` needs GHCR and the trust root to be reachable, and waits for their answers. In the twelve runs of the admission test that had passed by 9 October 2026, on `main` and on branches, the Pod that was admitted by tag took 2 to 8 seconds to create and a Pod that the image policy refused took up to 5, by the test's own clock, which counts whole seconds and includes kubectl. In the run that made the release shown above the first took 6 seconds and the refusals 2 to 4. What happens while one of those services is down was not tested.
+The runs of the three workflows fetch what they need from the places in this table, and none of them is under this repository's control. The table is read from the workflows and the Makefile.
+
+| From | What | Named by |
+|---|---|---|
+| GitHub | The runner and the tools on it, such as docker, kind, helm, jq, gh and Python. The four actions. The API, for the list of runs, the issues and the versions of a package. Artifact storage, for the SBOM and the report of the rescan. The token service that says which workflow is signing. | The actions by commit. The runner by the label `ubuntu-24.04`, behind which GitHub changes the image. |
+| `ghcr.io` | This repository's two packages. The images of hadolint, gitleaks, Trivy, cosign and the Kyverno CLI. | Digest |
+| `mirror.gcr.io`, Google's mirror of Docker Hub | The images of actionlint, of the kind node and of Python for the build stage. Trivy's vulnerability database. | The digest Docker Hub gives the image. The database is not pinned: each run downloads the newest. |
+| `gcr.io` | The distroless image that the release is built on. | Digest |
+| PyPI | The Python packages, in three jobs and inside every build of the image. | Hash |
+| `registry.k8s.io` | The pause image, as the image from another registry that has to be refused. It is never run: the Kyverno CLI and Kyverno in the cluster look for what is attached to it. | Digest |
+| `kyverno.github.io` | Kyverno's Helm chart, in the admission job. | Version |
+| `reg.kyverno.io` | Kyverno's five images, which the chart names and the kind node pulls. When tried on 12 October 2026, the name passed requests on to `ghcr.io`. | Tag |
+| Sigstore's public instance | Its certificate authority, its transparency log and its timestamp authority, for signing. The mirror of its trust root, for signing and for every verification: by cosign, by the Kyverno CLI and by Kyverno in the cluster. | Not pinned |
+
+Docker Hub is not in the table. Three of the images are published there and were pulled from it until 12 October 2026. They now come from Google's mirror under the same digests, so that a run does not depend on Docker Hub's limit on pulls without a login. No run had failed on that limit.
+
+- To sign, a run needs GitHub's token service, all of Sigstore's public instance and GHCR. To verify, it needs GHCR and the trust root.
+- In a real cluster the image policy makes GHCR and the trust root part of admission: creating a Pod in `apps` needs both to be reachable, and waits for their answers. In the twelve runs of the admission test that had passed by 9 October 2026, on `main` and on branches, the Pod that was admitted by tag took 2 to 8 seconds to create and a Pod that the image policy refused took up to 5, by the test's own clock, which counts whole seconds and includes kubectl. In the run that made the release shown above the first took 6 seconds and the refusals 2 to 4. What happens while one of the two is down was not tested.
+- Some fetches are tried three times, 10 and then 20 seconds apart: the pushes and the anonymous pulls of the release, the download of the vulnerability database in `release.yml` and `rescan.yml`, the pulls of cosign, of the Kyverno CLI and of the node image, the chart, the lookup of the digest of the latest release in the rescan, and each call of cosign or of `kyverno test` that has to pass. Asked once: the actions and what they transfer, `pip install`, the builds of the image with their base images and packages, the images that `ci.yml` runs its linters and its Trivy gate from and the database that gate downloads, Trivy's three reads of the released image, the logins, and the calls to GitHub's API in the rescan. A check that has to fail is asked once as well, because a refusal is an answer. An outage that outlasts the tries fails the run.
 - Every release writes four entries to Sigstore's public transparency log, and they cannot be removed. Three of them name this repository, the workflow file and the ref.
 
 **What a pull request cannot test**
