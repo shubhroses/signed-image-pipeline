@@ -1,8 +1,9 @@
 # Dependabot keeps the pins of this repository moving: every Monday it opens
 # one pull request for each group below whose pins are behind. It leaves a new
 # version alone until that version has been out for three days. That wait is
-# Dependabot's default, and nothing here changes it. A pull request runs
-# ci.yml, and merging one is a push to main, which makes a release.
+# Dependabot's default, and nothing here changes it; the two base images go
+# without it, for the reason given below. A pull request runs ci.yml, and
+# merging one is a push to main, which makes a release.
 #
 # This is also how main turns green again after the scan gate has failed on a
 # vulnerability that got a fix: the fix arrives as one of these pull requests.
@@ -44,8 +45,17 @@ updates:
   # under the same tag is how a rebuilt base image arrives, and with it the
   # fixes for the system packages. A newer Python is not taken from here: the
   # locks, the workflows and the runtime image name the same minor version and
-  # have to move with it. Dependabot finds no publication date for an image on
-  # gcr.io, so a new digest of the runtime image is proposed without the wait.
+  # have to move with it.
+  #
+  # Dependabot asks the registry that a FROM line names: mirror.gcr.io,
+  # Google's mirror of Docker Hub, for the build image, and gcr.io for the
+  # runtime image. It finds a publication date only for an image on Docker Hub
+  # itself, so a new digest of either image is proposed without the wait.
+  #
+  # It names an image by its path in the registry. For the build image that is
+  # library/python on the mirror, and python on Docker Hub. The rule below is
+  # written for both names, so that it still holds if the FROM line is ever
+  # pointed back at Docker Hub.
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -53,6 +63,10 @@ updates:
       day: monday
       time: "06:00" # UTC
     ignore:
+      - dependency-name: library/python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
       - dependency-name: python
         update-types:
           - version-update:semver-major

@@ -170,7 +170,7 @@ The policy against ephemeral containers was tried the same way, in [a run on ano
 
 **What follows from the gate**
 
-- When a fix is published for a High or Critical vulnerability that is already in the image, the next push to `main` fails the gate, and `main` stays red until the fixed package or base image is merged. That is intended. Dependabot proposes such an update on a Monday, and for most sources not until the new version is three days old, so `main` can be red for days.
+- When a fix is published for a High or Critical vulnerability that is already in the image, the next push to `main` fails the gate, and `main` stays red until the fixed package or base image is merged. That is intended. Dependabot proposes such an update on a Monday. For a Python package it also waits until the new version is three days old; for a base image it does not, because it finds no publication date in the registries the two are read from. Either way `main` can be red for days.
 - The weekly rescan reports and stops nothing. It reads the latest release, not the one `deploy/` pins: that digest is moved by hand and is always at least one release behind.
 
 **Others**
