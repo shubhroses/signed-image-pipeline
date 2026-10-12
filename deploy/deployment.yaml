@@ -1,7 +1,9 @@
 # The service, as it runs in the apps namespace (policy/namespace.yaml).
-# Everything the three admission controls ask for is spelt out here: the image
-# by digest, the security settings of the "restricted" standard, and CPU and
-# memory requests and limits.
+# Three of the four admission controls there ask something of a workload, and
+# all of it is spelt out here: the image by digest, the security settings of
+# the "restricted" standard, and CPU and memory requests and limits. The
+# fourth, which refuses a container added to a running Pod, asks nothing of a
+# manifest.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

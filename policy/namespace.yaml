@@ -1,4 +1,4 @@
-# The namespace the service runs in, and the first of its three admission
+# The namespace the service runs in, and the first of its four admission
 # controls. Pod Security Admission is built into Kubernetes and needs nothing
 # installed: these labels switch it on. "enforce" refuses any Pod that breaks
 # the "restricted" standard, which among other things forbids running as root,
