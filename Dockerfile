@@ -6,7 +6,7 @@
 # Google's mirror of Docker Hub, where an official image is under library/.
 # The digest is the one Docker Hub gives it, and a build does not depend on
 # Docker Hub's limit on pulls without a login.
-FROM mirror.gcr.io/library/python:3.13-slim-trixie@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f AS build
+FROM mirror.gcr.io/library/python:3.13-slim-trixie@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962 AS build
 
 COPY app/requirements.txt /tmp/requirements.txt
 
@@ -25,7 +25,7 @@ RUN pip install \
 
 # Final stage: distroless holds the Python runtime and what it needs to run.
 # It has no shell, no package manager and no pip, so no build tools ship.
-FROM gcr.io/distroless/python3-debian13:nonroot@sha256:83aa8d4f74a4d7f7cf2d472054139bef71a927b76c680c0f2e1021d6b1d6d732
+FROM gcr.io/distroless/python3-debian13:nonroot@sha256:64e54c4b1200da244d80181d98e86fc01d73c8101f107d5baf472152d8e119a2
 
 COPY --from=build /deps /deps
 COPY app/__init__.py app/main.py /srv/app/
